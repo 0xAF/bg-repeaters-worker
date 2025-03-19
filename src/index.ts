@@ -1,0 +1,151 @@
+import { Hono } from 'hono'
+import { basicAuth } from 'hono/basic-auth'
+import { etag } from 'hono/etag'
+import { poweredBy } from 'hono/powered-by'
+import { logger } from 'hono/logger'
+import { prettyJSON } from 'hono/pretty-json'
+import { HTTPException } from "hono/http-exception"
+import { swaggerUI } from '@hono/swagger-ui'
+// import { swaggerEditor } from '@hono/swagger-editor'
+
+import { api } from './api'
+// import { admin } from './api-admin'
+
+
+const app = new Hono<{ Bindings: CloudflareBindings }>()
+app.route('/', api) // api will add its basePath (/api/v1)
+
+// app.use('/admin/*', basicAuth({
+//   verifyUser: (u, p, c) => { return (u === "admin" && p === c.env.ADMIN_PW) }
+// }))
+// app.get('/admin/*', (c) => c.text('You are authorized'))
+// app.route('/', admin) // api will add its basePath (/admin)
+
+
+// Use the middleware to serve Swagger UI at /ui
+app.get('/ui', swaggerUI({ url: '/api/v1/doc' }))
+// app.get('/editor', swaggerEditor({ url: '/api/v1/doc' }))
+
+
+
+app.get("/public/*", async (ctx) => {
+  return await ctx.env.ASSETS.fetch(ctx.req.raw);
+});
+
+
+// Mount Builtin Middleware
+app.use('*', poweredBy())
+// app.use('*', logger())
+
+// Add X-Response-Time header
+app.use('*', async (c, next) => {
+  const start = Date.now()
+  await next()
+  const ms = Date.now() - start
+  c.header('X-Response-Time', `${ms}ms`)
+})
+
+
+
+// Add Custom Header
+app.use('/hello/*', async (c, next) => {
+  await next()
+  c.header('X-message', 'This is addHeader middleware!')
+})
+// Use Response object directly
+app.get('/hello', () => new Response('This is /hello'))
+
+
+
+// Custom Not Found Message
+app.notFound((c) => {
+  return c.text('Custom 404 Not Found', 404)
+})
+
+
+// Error handling
+// app.onError((err, c) => {
+//   if (err instanceof HTTPException) {
+//     return err.getResponse()
+//   }
+//   console.error(`${err}`)
+//   return c.text('Custom Error Message', 500)
+// })
+
+
+
+// Routing
+app.get('/', (c) => c.text('BG Repeaters API'))
+
+
+// Named parameter
+app.get('/entry/:id', (c) => {
+  const id = c.req.param('id')
+  return c.text(`Your ID is ${id}`)
+})
+
+
+
+// Nested route
+const book = new Hono()
+book.get('/', (c) => c.text('List Books'))
+book.get('/:id', (c) => {
+  const id = c.req.param('id')
+  return c.text('Get Book: ' + id)
+})
+book.post('/', (c) => c.text('Create Book'))
+app.route('/book', book)
+
+
+
+// Redirect
+app.get('/redirect', (c) => c.redirect('/'))
+
+
+
+app.use('/etag/*', etag())
+// ETag
+app.get('/etag/cached', (c) => c.text('Is this cached?'))
+
+
+
+// Async
+app.get('/fetch-url', async (c) => {
+  const response = await fetch('https://0xAF.org/')
+  return c.text(`https://0xAF.org/ is ${response.status}`)
+})
+
+// Request headers
+app.get('/user-agent', (c) => {
+  const userAgent = c.req.header('User-Agent')
+  return c.text(`Your UserAgent is ${userAgent}`)
+})
+
+
+
+// JSON
+app.get('/api/posts', prettyJSON(), (c) => {
+  const posts = [
+    { id: 1, title: 'Good Morning' },
+    { id: 2, title: 'Good Afternoon' },
+    { id: 3, title: 'Good Evening' },
+    { id: 4, title: 'Good Night' }
+  ]
+  return c.json(posts)
+})
+
+// status code
+app.post('/api/posts', (c) => c.json({ message: 'Created!' }, 201))
+
+// default route
+app.get('/api/*', (c) => c.text('API endpoint is not found', 404))
+
+// Throw Error
+// app.get('/error', () => {
+//   throw Error('Error has occurred')
+// })
+
+// @ts-ignore
+// app.get('/type-error', () => 'return not Response instance')
+
+export default app
