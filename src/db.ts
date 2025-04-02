@@ -47,9 +47,9 @@ export const getRepeaters = async (DB: D1Database, r: Repeater | RepeaterQueryIn
     if ((<RepeaterQueryInternal>r).have) {
       const rr = r as RepeaterQueryInternal
       if (rr.have?.rx?.from) { q += " AND freq_rx >= ?"; values.push(rr.have.rx.from) }
-      if (rr.have?.rx?.to) { q += " AND freq_rx >= ?"; values.push(rr.have.rx.to) }
+      if (rr.have?.rx?.to) { q += " AND freq_rx <= ?"; values.push(rr.have.rx.to) }
       if (rr.have?.tx?.from) { q += " AND freq_tx >= ?"; values.push(rr.have.tx.from) }
-      if (rr.have?.tx?.to) { q += " AND freq_tx >= ?"; values.push(rr.have.tx.to) }
+      if (rr.have?.tx?.to) { q += " AND freq_tx <= ?"; values.push(rr.have.tx.to) }
       if (rr.have?.tone) q += " AND tone > 0"
       if (rr.have?.fm) q += " AND mode_fm > 0"
       if (rr.have?.am) q += " AND mode_am > 0"
@@ -66,6 +66,7 @@ export const getRepeaters = async (DB: D1Database, r: Repeater | RepeaterQueryIn
       if (rr.have?.other) q += " AND net_other IS NOT NULL"
     }
 
+    // console.log(q, values)
     // const values = [ r ].map(element => element === undefined ? null : element)
     let { results } = await DB.prepare(q).bind(...values).all() || []
 
