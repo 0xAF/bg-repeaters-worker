@@ -19,11 +19,11 @@
 	],
 	"routes": [
 		{
-			"pattern": "repeaters.varna.radio",
+			"pattern": "api.varna.radio",
 			"custom_domain": true
 		},
 		{
-			"pattern": "r.varna.radio",
+			"pattern": "repeaters.varna.radio",
 			"custom_domain": true
 		}
 	],

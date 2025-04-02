@@ -11,6 +11,7 @@
 		"pages-deploy": "wrangler pages deploy dist"
 	},
 	"dependencies": {
+		"@amrato/maidenhead-ts": "^2.0.0",
 		"@hono/swagger-ui": "^0.5.1",
 		"@hono/zod-openapi": "^0.19.2",
 		"hono": "^4.7.4",

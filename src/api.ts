@@ -5,6 +5,7 @@ import { RepeaterRequestSchema, RepeaterSchema, RepeaterQuerySchema } from './ap
 import { ErrorSchema } from './api/ErrorSchema'
 import { basicAuth } from 'hono/basic-auth'
 import * as db from "./db"
+import { ContentfulStatusCode } from 'hono/utils/http-status'
 
 type Repeater = z.infer<typeof RepeaterSchema>;
 type ErrorJSON = z.infer<typeof ErrorSchema>;
@@ -20,7 +21,7 @@ const api = new OpenAPIHono<{ Bindings: CloudflareBindings }>({
       }, 422)
     }
   },
-}).basePath('/api/v1')
+}).basePath('/v1')
 
 // The OpenAPI documentation will be available at /doc
 api.doc('/doc', (c) => ({
@@ -65,8 +66,8 @@ api.openapi(
   async (c) => {
     const { callsign } = c.req.valid('param')
     const r = await db.getRepeater(c.env.RepsDB, callsign)
-    const re: ErrorJSON = r as ErrorJSON
-    if (re.failure) return c.json(re, re.code as any || 422)
+    if ((r as ErrorJSON).failure)
+      return c.json((r as ErrorJSON), (r as ErrorJSON).code as ContentfulStatusCode || 422)
     return c.json(r, 200)
   }
 )
@@ -98,8 +99,8 @@ api.openapi(
     const nestedData = convertDotNotationToNestedObject(data);
     // console.log(nestedData)
     const r = await db.getRepeaters(c.env.RepsDB, nestedData as Repeater)
-    const re: ErrorJSON = r as ErrorJSON
-    if (re.failure) return c.json(re, re.code as any || 422)
+    if ((r as ErrorJSON).failure)
+      return c.json((r as ErrorJSON), (r as ErrorJSON).code as ContentfulStatusCode || 422)
     return c.json(r, 200)
   }
 )
@@ -122,8 +123,8 @@ api.openapi(
   async (c) => {
     const param = await c.req.valid('json')
     const r = await db.addRepeater(c.env.RepsDB, param)
-    const re: ErrorJSON = r as ErrorJSON
-    if (re.failure) return c.json(re, re.code as any || 422)
+    if ((r as ErrorJSON).failure)
+      return c.json((r as ErrorJSON), (r as ErrorJSON).code as ContentfulStatusCode || 422)
     return c.json(r, 201)
   }
 )
@@ -154,8 +155,8 @@ api.openapi(
       return c.json({ failure: true, errors: { "JSON": "Cannot parse JSON data" }, code: 422 }, 422)
     }
     const r = await db.updateRepeater(c.env.RepsDB, callsign, data as Repeater)
-    const re: ErrorJSON = r as ErrorJSON
-    if (re.failure) return c.json(re, re.code as any || 422)
+    if ((r as ErrorJSON).failure)
+      return c.json((r as ErrorJSON), (r as ErrorJSON).code as ContentfulStatusCode || 422)
     return c.json(r, 202)
   }
 )
@@ -175,8 +176,8 @@ api.openapi(
   async (c) => {
     const { callsign } = c.req.valid('param')
     const r = await db.deleteRepeater(c.env.RepsDB, callsign)
-    const re: ErrorJSON = r as ErrorJSON
-    if (re.failure) return c.json(re, re.code as any || 422)
+    if ((r as ErrorJSON).failure)
+      return c.json((r as ErrorJSON), (r as ErrorJSON).code as ContentfulStatusCode || 422)
     return c.json(r, 200)
   }
 )

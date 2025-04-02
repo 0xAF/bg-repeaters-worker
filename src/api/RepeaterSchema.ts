@@ -199,11 +199,19 @@ const freq_tone = z
     example: 79.7
   })
 
+const channel = z
+  .string()
+  .optional()
+  .openapi({
+    description: "Channel designation for the repeater"
+  })
+
 const freq = z
   .object({
     rx: freq_rx,
     tx: freq_tx,
     tone: freq_tone,
+    channel,
   })
   .openapi({
     description: "RX, TX and Tone (CTCSS) frequencies the repeater",
@@ -252,7 +260,7 @@ const internet = z
     description: "Internet connectivity",
     example: { echolink: 9870 }
   })
-const coverageMapJSON = z
+const coverage_map_json = z
   .string()
   .optional()
   .openapi({
@@ -271,6 +279,13 @@ const updated = z
     description: "Date of last update"
   })
 
+const qth = z
+  .string()
+  .optional()
+  .openapi({
+    description: "Maidenhead locator (QTH)"
+  })
+
 
 const RepeaterSchema = z.object({
   callsign,
@@ -280,13 +295,14 @@ const RepeaterSchema = z.object({
   longitude,
   place,
   location,
+  qth,
   info,
   altitude,
   power,
   modes,
   freq,
   internet,
-  coverageMapJSON,
+  coverage_map_json,
   added,
   updated,
 }).openapi('RepeaterSchema')

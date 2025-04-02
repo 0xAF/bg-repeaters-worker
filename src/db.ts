@@ -1,13 +1,14 @@
 import { RepeaterSchema, RepeaterQueryInternalSchema } from './api/RepeaterSchema'
 import { ErrorSchema } from './api/ErrorSchema'
 import { z } from '@hono/zod-openapi'
-import { util } from 'zod';
+// import { util } from 'zod';
+import Maidenhead from '@amrato/maidenhead-ts';
 
 type Repeater = z.infer<typeof RepeaterSchema>;
 type RepeaterQueryInternal = z.infer<typeof RepeaterQueryInternalSchema>;
 type ErrorJSON = z.infer<typeof ErrorSchema>;
 
-export const getRepeaters = async (DB: D1Database, r: Repeater | RepeaterInternalQuery): Promise<Repeater[] | ErrorJSON> => {
+export const getRepeaters = async (DB: D1Database, r: Repeater | RepeaterQueryInternal): Promise<Repeater[] | ErrorJSON> => {
   try {
     let q = `SELECT * FROM repeaters WHERE disabled = 0`
     let values = []
@@ -77,7 +78,8 @@ export const getRepeaters = async (DB: D1Database, r: Repeater | RepeaterInterna
       return undefined; // Return undefined if the property does not exist
     }
     results.map(e => {
-      e.channel = getChannel(parseInt(<string>e.freq_tx, 10))
+      e.added = deleteAndReturn(e, 'created')
+      if (e.latitude && e.longitude) e.qth = Maidenhead.fromCoordinates(e.latitude as number, e.longitude as number, 3).locator
       e.modes = {
         fm: deleteAndReturn(e, 'mode_fm') ? true : false,
         am: deleteAndReturn(e, 'mode_am') ? true : false,
@@ -89,10 +91,12 @@ export const getRepeaters = async (DB: D1Database, r: Repeater | RepeaterInterna
         parrot: deleteAndReturn(e, 'mode_parrot') ? true : false,
         beacon: deleteAndReturn(e, 'mode_beacon') ? true : false,
       }
+      let channel = getChannel(parseInt(<string>e.freq_tx, 10))
       e.freq = {
         rx: deleteAndReturn(e, 'freq_rx'),
         tx: deleteAndReturn(e, 'freq_tx'),
         tone: deleteAndReturn(e, 'tone'),
+        channel
       }
       e.internet = {
         echolink: deleteAndReturn(e, 'net_echolink'),
@@ -100,7 +104,7 @@ export const getRepeaters = async (DB: D1Database, r: Repeater | RepeaterInterna
         zello: deleteAndReturn(e, 'net_zello'),
         other: deleteAndReturn(e, 'net_other'),
       }
-      let c = deleteAndReturn(e, 'coverage_map_json');
+      let c = deleteAndReturn(e, 'coverage_map_json') as string;
       if (c) e.coverage_map = JSON.parse(c);
     })
     return results as Repeater[]
@@ -111,18 +115,16 @@ export const getRepeaters = async (DB: D1Database, r: Repeater | RepeaterInterna
 
 export const getRepeater = async (DB: D1Database, r: string): Promise<Repeater | ErrorJSON> => {
   const res: Repeater[] | ErrorJSON = await getRepeaters(DB, { callsign: r } as Repeater)
-  if (res.failure) return res as ErrorJSON
-  if (!res[0]) return { failure: true, errors: { "NOTFOUND": "Repeater not found." }, code: 404 }
-  return res[0] || {} as Repeater
+  if ((res as ErrorJSON).failure) return res as ErrorJSON
+  if (!(res as Repeater[])[0]) return { failure: true, errors: { "NOTFOUND": "Repeater not found." }, code: 404 }
+  return (res as Repeater[])[0] || {} as Repeater
 }
 
 export const addRepeater = async (DB: D1Database, p: Repeater): Promise<Repeater | ErrorJSON> => {
   try {
     const check = await getRepeater(DB, p.callsign)
-    const ce = check as ErrorJSON
-    if (ce.failure && ce.code != 404) return check;
-    const cs = check as Repeater
-    if (cs.callsign) return { failure: true, errors: { "EXISTS": "Repeater with this callsign already exists in database." }, code: 406 }
+    if ((check as ErrorJSON).failure && (check as ErrorJSON).code != 404) return check as ErrorJSON;
+    if ((check as Repeater).callsign) return { failure: true, errors: { "EXISTS": "Repeater with this callsign already exists in database." }, code: 406 }
 
     const q =
       `INSERT INTO repeaters (
@@ -229,7 +231,7 @@ export const deleteRepeater = async (DB: D1Database, rep: string): Promise<Repea
 
 
 
-const getChannel = (f: number) : string => {
+const getChannel = (f: number): string => {
   /* NOTE: calculations are based on repeater output freq
   IARU-R1
   Channel designation system for VHF/UHF FM channels

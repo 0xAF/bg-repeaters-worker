@@ -7,6 +7,7 @@ import { prettyJSON } from 'hono/pretty-json'
 import { HTTPException } from "hono/http-exception"
 import { swaggerUI } from '@hono/swagger-ui'
 // import { swaggerEditor } from '@hono/swagger-editor'
+import { html, raw } from 'hono/html'
 
 import { api } from './api'
 // import { admin } from './api-admin'
@@ -23,7 +24,7 @@ app.route('/', api) // api will add its basePath (/api/v1)
 
 
 // Use the middleware to serve Swagger UI at /ui
-app.get('/ui', swaggerUI({ url: '/api/v1/doc' }))
+app.get('/ui', swaggerUI({ url: '/v1/doc' }))
 // app.get('/editor', swaggerEditor({ url: '/api/v1/doc' }))
 
 
@@ -75,7 +76,31 @@ app.notFound((c) => {
 
 
 // Routing
-app.get('/', (c) => c.text('BG Repeaters API'))
+app.get('/', (c) => {
+  return c.html(
+    html`<html>
+<head>
+  <title>BG Repeaters API</title>
+</head>
+<body>
+  <h1>BG Repeaters API</h1>
+  <p>API for Bulgarian Repeaters Database</p>
+  <h2>Endpoints</h2>
+  <ul>
+    <li><a href="/ui">API documentation and testing</a></li>
+  </ul>
+
+  <footer>
+    <p>Contacts:</p>
+    <ul>
+      <li>Email: af@0xAF.org</li>
+      <li>CallSign: LZ2SLL</li>
+    </ul>
+  </footer>
+</body>
+</html>`
+  )
+})
 
 
 // Named parameter
