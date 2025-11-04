@@ -10,11 +10,19 @@ import { swaggerUI } from '@hono/swagger-ui'
 import { html, raw } from 'hono/html'
 
 import { api } from './api'
+import * as db from './db'
 // import { admin } from './api-admin'
 
 
 const app = new Hono<{ Bindings: CloudflareBindings }>()
 app.route('/', api) // api will add its basePath (/api/v1)
+// Explicit handler for trailing-slash variant of the list endpoint to avoid 404s on '/v1/'
+app.get('/v1/', async (c) => {
+  const r = await db.getRepeaters(c.env.RepsDB, {} as any)
+  const err = r as any
+  if (err && err.failure) return c.json(err, err.code || 422)
+  return c.json(r, 200)
+})
 
 // app.use('/admin/*', basicAuth({
 //   verifyUser: (u, p, c) => { return (u === "admin" && p === c.env.ADMIN_PW) }
