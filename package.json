@@ -8,7 +8,9 @@
 		"pages-dev:wrangler": "wrangler pages dev dist --live-reload",
 		"pages-dev:esbuild": "esbuild --bundle src/server.js --format=esm --watch --outfile=dist/_worker.js",
 		"pages-build": "esbuild --bundle src/server.js --format=esm --outfile=dist/_worker.js",
-		"pages-deploy": "wrangler pages deploy dist"
+		"pages-deploy": "wrangler pages deploy dist",
+		"test": "node --test",
+		"test:integration": "node --test test/bgreps.integration.test.js"
 	},
 	"dependencies": {
 		"@amrato/maidenhead-ts": "^2.0.0",

@@ -1,4 +1,5 @@
 dump.sql
+reps.json
 
 # prod
 dist/

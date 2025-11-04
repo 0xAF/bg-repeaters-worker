@@ -138,6 +138,13 @@ const modes_fusion = z
     description: "Supports FUSION/C4FM mode"
   })
 
+const modes_nxdn = z
+  .boolean()
+  .optional()
+  .openapi({
+    description: "Supports NXDN mode"
+  })
+
 const modes_parrot = z
   .boolean()
   .optional()
@@ -161,6 +168,7 @@ const modes = z
     dmr: modes_dmr,
     dstar: modes_dstar,
     fusion: modes_fusion,
+    nxdn: modes_nxdn,
     parrot: modes_parrot,
     beacon: modes_beacon,
   })
@@ -171,6 +179,7 @@ const modes = z
       dmr: true,
       dstar: true,
       fusion: true,
+      nxdn: true,
     }
   })
 
@@ -366,6 +375,13 @@ const have_fusion = z
     description: "Supports FUSION/C4FM mode"
   })
 
+const have_nxdn = z
+  .enum(["false", "true", "0", "1"]).transform((value) => value == "true" || value == "1").pipe(z.boolean())
+  .optional()
+  .openapi({
+    description: "Supports NXDN mode"
+  })
+
 const have_parrot = z
   .enum(["false", "true", "0", "1"]).transform((value) => value == "true" || value == "1").pipe(z.boolean())
   .optional()
@@ -471,6 +487,7 @@ const RepeaterQuerySchema = z.object({
   have_dmr,
   have_dstar,
   have_fusion,
+  have_nxdn,
   have_parrot,
   have_beacon,
   have_echolink,
@@ -511,6 +528,7 @@ const RepeaterQueryInternalSchema = z.object({
       dmr: have_dmr,
       dstar: have_dstar,
       fusion: have_fusion,
+      nxdn: have_nxdn,
       parrot: have_parrot,
       beacon: have_beacon,
       echolink: have_echolink,
