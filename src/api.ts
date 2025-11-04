@@ -2,6 +2,7 @@ import { z } from '@hono/zod-openapi'
 import { createRoute } from '@hono/zod-openapi'
 import { OpenAPIHono } from '@hono/zod-openapi'
 import { RepeaterRequestSchema, RepeaterSchema, RepeaterQuerySchema } from './api/RepeaterSchema'
+import { ChangelogEntrySchema, ChangelogResponseSchema } from './api/ChangelogSchema'
 import { ErrorSchema } from './api/ErrorSchema'
 import { basicAuth } from 'hono/basic-auth'
 import * as db from "./db"
@@ -9,6 +10,8 @@ import { ContentfulStatusCode } from 'hono/utils/http-status'
 
 type Repeater = z.infer<typeof RepeaterSchema>;
 type ErrorJSON = z.infer<typeof ErrorSchema>;
+type ChangelogEntry = z.infer<typeof ChangelogEntrySchema>;
+type ChangelogResponse = z.infer<typeof ChangelogResponseSchema>;
 
 
 const api = new OpenAPIHono<{ Bindings: CloudflareBindings }>({
@@ -51,6 +54,33 @@ api.use('/*', async (c, next) => {
 
 
 
+// Changelog endpoint - define BEFORE the dynamic "/{callsign}" route so it doesn't get shadowed
+api.openapi(
+  createRoute({
+    method: 'get',
+    path: '/changelog',
+    responses: {
+      200: {
+        content: { 'application/json': { schema: ChangelogResponseSchema } },
+        description: 'Changelog overview',
+      },
+      "*": {
+        content: { 'application/json': { schema: ErrorSchema } },
+        description: 'Error description',
+      }
+    }
+  }),
+  async (c) => {
+    const r = await db.getChangelog(c.env.RepsDB)
+    if ((r as ErrorJSON).failure)
+      return c.json((r as ErrorJSON), (r as ErrorJSON).code as ContentfulStatusCode || 422) as any
+    const changes = r as ChangelogEntry[]
+    const lastChanged = (changes[0]?.date as string | undefined) ?? null
+    const payload: ChangelogResponse = { lastChanged, changes }
+    return c.json(payload, 200) as any
+  }
+)
+
 api.openapi(
   createRoute({
     method: 'get',
@@ -60,6 +90,10 @@ api.openapi(
       200: {
         content: { 'application/json': { schema: RepeaterSchema } },
         description: "Retrieve repeater object"
+      },
+      "*": {
+        content: { 'application/json': { schema: ErrorSchema } },
+        description: "Error description"
       }
     }
   }),
@@ -67,8 +101,8 @@ api.openapi(
     const { callsign } = c.req.valid('param')
     const r = await db.getRepeater(c.env.RepsDB, callsign)
     if ((r as ErrorJSON).failure)
-      return c.json((r as ErrorJSON), (r as ErrorJSON).code as ContentfulStatusCode || 422)
-    return c.json(r, 200)
+      return c.json((r as ErrorJSON), (r as ErrorJSON).code as ContentfulStatusCode || 422) as any
+    return c.json(r, 200) as any
   }
 )
 
@@ -100,8 +134,8 @@ api.openapi(
     // console.log(nestedData)
     const r = await db.getRepeaters(c.env.RepsDB, nestedData as Repeater)
     if ((r as ErrorJSON).failure)
-      return c.json((r as ErrorJSON), (r as ErrorJSON).code as ContentfulStatusCode || 422)
-    return c.json(r, 200)
+      return c.json((r as ErrorJSON), (r as ErrorJSON).code as ContentfulStatusCode || 422) as any
+    return c.json(r, 200) as any
   }
 )
 
@@ -114,9 +148,13 @@ api.openapi(
       body: { content: { 'application/json': { schema: RepeaterSchema } }, required: true },
     },
     responses: {
-      200: {
+      201: {
         content: { 'application/json': { schema: RepeaterSchema } },
         description: "Create new repeater"
+      },
+      "*": {
+        content: { 'application/json': { schema: ErrorSchema } },
+        description: "Error description"
       }
     }
   }),
@@ -124,8 +162,8 @@ api.openapi(
     const param = await c.req.valid('json')
     const r = await db.addRepeater(c.env.RepsDB, param)
     if ((r as ErrorJSON).failure)
-      return c.json((r as ErrorJSON), (r as ErrorJSON).code as ContentfulStatusCode || 422)
-    return c.json(r, 201)
+      return c.json((r as ErrorJSON), (r as ErrorJSON).code as ContentfulStatusCode || 422) as any
+    return c.json(r, 201) as any
   }
 )
 
@@ -139,9 +177,13 @@ api.openapi(
       body: { content: { 'application/json': { schema: z.object({}) } }, required: true },
     },
     responses: {
-      200: {
+      202: {
         content: { 'application/json': { schema: RepeaterSchema } },
         description: "Update repeater"
+      },
+      "*": {
+        content: { 'application/json': { schema: ErrorSchema } },
+        description: "Error description"
       }
     }
   }),
@@ -152,12 +194,12 @@ api.openapi(
     try {
       data = await c.req.json()
     } catch (e) {
-      return c.json({ failure: true, errors: { "JSON": "Cannot parse JSON data" }, code: 422 }, 422)
+      return c.json({ failure: true, errors: { "JSON": "Cannot parse JSON data" }, code: 422 }, 422) as any
     }
     const r = await db.updateRepeater(c.env.RepsDB, callsign, data as Repeater)
     if ((r as ErrorJSON).failure)
-      return c.json((r as ErrorJSON), (r as ErrorJSON).code as ContentfulStatusCode || 422)
-    return c.json(r, 202)
+      return c.json((r as ErrorJSON), (r as ErrorJSON).code as ContentfulStatusCode || 422) as any
+    return c.json(r, 202) as any
   }
 )
 
@@ -170,6 +212,10 @@ api.openapi(
       200: {
         content: { 'application/json': { schema: RepeaterSchema } },
         description: "Delete repeater object"
+      },
+      "*": {
+        content: { 'application/json': { schema: ErrorSchema } },
+        description: "Error description"
       }
     }
   }),
@@ -177,8 +223,8 @@ api.openapi(
     const { callsign } = c.req.valid('param')
     const r = await db.deleteRepeater(c.env.RepsDB, callsign)
     if ((r as ErrorJSON).failure)
-      return c.json((r as ErrorJSON), (r as ErrorJSON).code as ContentfulStatusCode || 422)
-    return c.json(r, 200)
+      return c.json((r as ErrorJSON), (r as ErrorJSON).code as ContentfulStatusCode || 422) as any
+    return c.json(r, 200) as any
   }
 )
 

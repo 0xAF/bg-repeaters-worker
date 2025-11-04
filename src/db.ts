@@ -3,6 +3,8 @@ import { ErrorSchema } from './api/ErrorSchema'
 import { z } from '@hono/zod-openapi'
 // import { util } from 'zod';
 import Maidenhead from '@amrato/maidenhead-ts';
+// Local type for changelog entries to avoid cross-file module resolution issues in some editors
+type ChangelogEntry = { date: string; who: string; info: string }
 
 type Repeater = z.infer<typeof RepeaterSchema>;
 type RepeaterQueryInternal = z.infer<typeof RepeaterQueryInternalSchema>;
@@ -27,6 +29,7 @@ export const getRepeaters = async (DB: D1Database, r: Repeater | RepeaterQueryIn
       if (rr.modes?.dmr) { q += " AND mode_dmr = ?"; values.push(rr.modes.dmr ? 1 : 0) }
       if (rr.modes?.dstar) { q += " AND mode_dstar = ?"; values.push(rr.modes.dstar ? 1 : 0) }
       if (rr.modes?.fusion) { q += " AND mode_fusion = ?"; values.push(rr.modes.fusion ? 1 : 0) }
+      if (rr.modes?.nxdn) { q += " AND mode_nxdn = ?"; values.push(rr.modes.nxdn ? 1 : 0) }
       if (rr.modes?.parrot) { q += " AND mode_parrot = ?"; values.push(rr.modes.parrot ? 1 : 0) }
       if (rr.modes?.beacon) { q += " AND mode_beacon = ?"; values.push(rr.modes.beacon ? 1 : 0) }
       if (rr.freq?.rx) { q += " AND freq_rx = ?"; values.push(rr.freq.rx) }
@@ -58,6 +61,7 @@ export const getRepeaters = async (DB: D1Database, r: Repeater | RepeaterQueryIn
       if (rr.have?.dmr) q += " AND mode_dmr > 0"
       if (rr.have?.dstar) q += " AND mode_dstar > 0"
       if (rr.have?.fusion) q += " AND mode_fusion > 0"
+      if (rr.have?.nxdn) q += " AND mode_nxdn > 0"
       if (rr.have?.parrot) q += " AND mode_parrot > 0"
       if (rr.have?.beacon) q += " AND mode_beacon > 0"
       if (rr.have?.echolink) q += " AND net_echolink > 0"
@@ -89,6 +93,7 @@ export const getRepeaters = async (DB: D1Database, r: Repeater | RepeaterQueryIn
         dmr: deleteAndReturn(e, 'mode_dmr') ? true : false,
         dstar: deleteAndReturn(e, 'mode_dstar') ? true : false,
         fusion: deleteAndReturn(e, 'mode_fusion') ? true : false,
+        nxdn: deleteAndReturn(e, 'mode_nxdn') ? true : false,
         parrot: deleteAndReturn(e, 'mode_parrot') ? true : false,
         beacon: deleteAndReturn(e, 'mode_beacon') ? true : false,
       }
@@ -130,14 +135,14 @@ export const addRepeater = async (DB: D1Database, p: Repeater): Promise<Repeater
     const q =
       `INSERT INTO repeaters (
 				callsign, disabled, keeper, latitude, longitude, place, location, info, altitude, power,
-				mode_fm, mode_am, mode_usb, mode_lsb, mode_dmr, mode_dstar, mode_fusion, mode_parrot, mode_beacon,
+				mode_fm, mode_am, mode_usb, mode_lsb, mode_dmr, mode_dstar, mode_fusion, mode_nxdn, mode_parrot, mode_beacon,
 				freq_rx, freq_tx, tone,
 				net_echolink, net_allstarlink, net_zello, net_other,
 				coverage_map_json,
 				created, updated
 			) VALUES (
 			 	UPPER(?), 0, UPPER(?), ?, ?, ?, ?, ?, ?, ?,
-				?, ?, ?, ?, ?, ?, ?, ?, ?,
+				?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
 				?, ?, ?,
 				?, ?, ?, ?,
 				?,
@@ -146,7 +151,7 @@ export const addRepeater = async (DB: D1Database, p: Repeater): Promise<Repeater
 			`
     const values = [
       p.callsign, p.keeper, p.latitude, p.longitude, p.place, p.location, p.info?.join("\r\n"), p.altitude, p.power,
-      p.modes.fm, p.modes.am, p.modes.usb, p.modes.lsb, p.modes.dmr, p.modes.dstar, p.modes.fusion, p.modes.parrot, p.modes.beacon,
+      p.modes.fm, p.modes.am, p.modes.usb, p.modes.lsb, p.modes.dmr, p.modes.dstar, p.modes.fusion, p.modes.nxdn, p.modes.parrot, p.modes.beacon,
       p.freq.rx, p.freq.tx, p.freq.tone,
       p.internet?.echolink, p.internet?.allstarlink, p.internet?.zello, p.internet?.other,
       p.coverage_map_json
@@ -180,7 +185,7 @@ export const updateRepeater = async (DB: D1Database, rep: string, p: Repeater): 
       `UPDATE repeaters SET 
 				callsign = UPPER(?), disabled = ?, keeper = UPPER(?), latitude = ?, longitude = ?,
 				place = ?, location = ?, info = ?, altitude = ?, power = ?,
-				mode_fm = ?, mode_am = ?, mode_usb = ?, mode_lsb = ?, mode_dmr = ?, mode_dstar = ?, mode_fusion = ?, mode_parrot = ?, mode_beacon = ?,
+				mode_fm = ?, mode_am = ?, mode_usb = ?, mode_lsb = ?, mode_dmr = ?, mode_dstar = ?, mode_fusion = ?, mode_nxdn = ?, mode_parrot = ?, mode_beacon = ?,
 				freq_rx = ?, freq_tx = ?, tone = ?,
 				net_echolink = ?, net_allstarlink = ?, net_zello = ?, net_other = ?,
 				coverage_map_json = ?,
@@ -190,7 +195,7 @@ export const updateRepeater = async (DB: D1Database, rep: string, p: Repeater): 
     const values = [
       u.callsign, u.disabled, u.keeper, u.latitude, u.longitude,
       u.place, u.location, u.info?.join("\r\n"), u.altitude, u.power,
-      u.modes.fm, u.modes.am, u.modes.usb, u.modes.lsb, u.modes.dmr, u.modes.dstar, u.modes.fusion, u.modes.parrot, u.modes.beacon,
+      u.modes.fm, u.modes.am, u.modes.usb, u.modes.lsb, u.modes.dmr, u.modes.dstar, u.modes.fusion, u.modes.nxdn, u.modes.parrot, u.modes.beacon,
       u.freq.rx, u.freq.tx, u.freq.tone,
       u.internet?.echolink, u.internet?.allstarlink, u.internet?.zello, u.internet?.other,
       u.coverage_map_json,
@@ -223,6 +228,27 @@ export const deleteRepeater = async (DB: D1Database, rep: string): Promise<Repea
     if (ret.failure) return {} as Repeater
     return { failure: true, errors: { "INTERNAL": "Cannot delete repeater from database." }, code: 422 }
   } catch (e: any) {
+    return { failure: true, errors: { "SQL": e.message }, code: 422 }
+  }
+}
+
+export const getChangelog = async (DB: D1Database): Promise<ChangelogEntry[] | ErrorJSON> => {
+  try {
+    const q = `SELECT date, who, info FROM changelog ORDER BY date DESC`;
+    const { results } = await DB.prepare(q).all() || { results: [] };
+    // Ensure ISO strings for date
+    (results as any[]).forEach(r => {
+      if (r.date) {
+        const d = new Date(r.date);
+        r.date = isNaN(d.getTime()) ? String(r.date) : d.toISOString();
+      }
+    });
+    return results as ChangelogEntry[];
+  } catch (e: any) {
+    // If the table doesn't exist yet in a fresh DB, return an empty changelog instead of failing
+    if (typeof e?.message === 'string' && /no such table/i.test(e.message)) {
+      return [] as ChangelogEntry[];
+    }
     return { failure: true, errors: { "SQL": e.message }, code: 422 }
   }
 }

@@ -29,6 +29,7 @@
  * - POST   /v1/                 -> createRepeater(data)
  * - PUT    /v1/{callsign}       -> updateRepeater(callsign, data)
  * - DELETE /v1/{callsign}       -> deleteRepeater(callsign)
+ * - GET    /v1/changelog        -> getChangelog()
  * - GET    /v1/doc              -> getDoc()
  *
  * Auth: Basic auth is required for all non-GET endpoints. Provide username/password in options.
@@ -209,6 +210,17 @@
         async deleteRepeater(callsign) {
             if (!callsign || typeof callsign !== 'string') throw new Error('deleteRepeater(callsign): callsign is required');
             return await this._request(`/${encodeURIComponent(callsign)}`, { method: 'DELETE' });
+        }
+
+        /**
+         * GET /v1/changelog
+         * Fetch changelog overview
+         * @example
+         * const { lastChanged, changes } = await api.getChangelog()
+         * @returns {Promise<{ lastChanged: string|null, changes: Array<{date:string, who:string, info:string}> }>}
+         */
+        async getChangelog() {
+            return await this._request('/changelog', { method: 'GET' });
         }
 
         /**

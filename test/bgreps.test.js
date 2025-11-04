@@ -111,3 +111,12 @@ test('getDoc requests /v1/doc', async () => {
   await api.getDoc()
   assert.equal(new URL(calls[0].url).pathname, '/v1/doc')
 })
+
+test('getChangelog requests /v1/changelog and expects object with lastChanged and changes', async () => {
+  const { fetch, calls } = createFetchSpy()
+  const api = new BGRepeaters({ baseURL: BASE, fetch })
+  const res = await api.getChangelog()
+  assert.equal(new URL(calls[0].url).pathname, '/v1/changelog')
+  assert.equal((calls[0].init.method || 'GET'), 'GET')
+  assert.ok(typeof res === 'object' && res !== null)
+})

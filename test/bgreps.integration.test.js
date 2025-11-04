@@ -45,3 +45,18 @@ conditionalTest('integration: getRepeater(callsign) returns an object for a call
   const one = await api.getRepeater(cs)
   assert.equal(one.callsign, cs)
 })
+
+conditionalTest('integration: getChangelog() returns { lastChanged, changes }', async () => {
+  const api = new BGRepeaters({ baseURL: BASE })
+  const res = await api.getChangelog()
+  assert.ok(res && typeof res === 'object')
+  assert.ok('lastChanged' in res)
+  assert.ok('changes' in res)
+  assert.ok(Array.isArray(res.changes), 'Expected changes to be an array')
+  if (res.changes.length > 0) {
+    const entry = res.changes[0]
+    assert.equal(typeof entry.date, 'string')
+    assert.equal(typeof entry.info, 'string')
+    assert.equal(typeof entry.who, 'string')
+  }
+})

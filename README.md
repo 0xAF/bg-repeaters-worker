@@ -29,6 +29,7 @@ It supports all endpoints:
 - POST   `/v1/`               → `createRepeater(data)` (Basic Auth)
 - PUT    `/v1/{callsign}`     → `updateRepeater(callsign, data)` (Basic Auth)
 - DELETE `/v1/{callsign}`     → `deleteRepeater(callsign)` (Basic Auth)
+- GET    `/v1/changelog`      → `getChangelog()`
 - GET    `/v1/doc`            → `getDoc()`
 
 ### Install / Include
@@ -110,6 +111,10 @@ await api.deleteRepeater('LZ0BOT')
 
 // OpenAPI:
 await api.getDoc()
+
+// Changelog:
+const { lastChanged, changes } = await api.getChangelog()
+console.log(lastChanged, changes.length)
 ```
 
 Notes:
