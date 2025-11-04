@@ -17,8 +17,8 @@ import * as db from './db'
 
 const app = new Hono<{ Bindings: CloudflareBindings }>()
 
-// CORS for API routes
-app.use('/v1/*', cors({
+// CORS for all routes (covers API and static)
+app.use('*', cors({
   origin: '*',
   allowMethods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
   allowHeaders: ['Content-Type', 'Authorization'],
