@@ -38,14 +38,14 @@ foreach my $k (sort keys %{$reps}) {
   eval {
     $db->query(qq{INSERT INTO repeaters VALUES (
         ?, ?, ?, ROUND(?, 7), ROUND(?, 7), ?, ?, ?, ?, ?,
-        ?, ?, ?, ?, ?, ?, ?, ?, ?,
+        ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
         ?, ?, ROUND(?, 1),
         ?, ?, ?, ?,
         ?,
         ?, ?
       )},
       $r->{callsign}, 0, $r->{keeper}, $r->{lat}, $r->{lon}, $r->{loc}, $r->{locExtra}, $info, $r->{altitude}, $power,
-      $fm, 0, $usb, 0, $r->{mode}->{dmr} ? 1 : 0, $r->{mode}->{dstar} ? 1 : 0, $r->{mode}->{fusion} ? 1 : 0, $r->{mode}->{parrot} ? 1 : 0, $beacon,
+      $fm, 0, $usb, 0, $r->{mode}->{dmr} ? 1 : 0, $r->{mode}->{dstar} ? 1 : 0, $r->{mode}->{fusion} ? 1 : 0, $r->{mode}->{nxdn} ? 1 : 0, $r->{mode}->{parrot} ? 1 : 0, $beacon,
       $r->{tx} * 1000 * 1000, $r->{rx} * 1000 * 1000, $r->{tone},
       $r->{echolink} ? $r->{echolink} : 0, $asl, $r->{zello}, undef,
       $coverage,

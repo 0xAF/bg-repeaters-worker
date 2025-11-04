@@ -249,13 +249,6 @@ const getChannel = (f: number): string => {
   • In the 145 MHz band the channel numbers start at V00 for 145.000 MHz and increment by one for each 12.5 kHz.
   • In the 435 MHz band the channel numbers start at U000 for 430 MHz and increment by one for each 12.5 kHz.
   */
-
-  // NOTE: in JS the % operator is 'reminder', not 'modulo'.
-  // it's not working correctly with numbers < 1
-  // Try in your browser console
-  // 0.5 % 0.05
-  // 0.1 % 0.01
-  // so I had to get the freq to integer
   let chan = "N/A";
   if (f >= 145200000 && f < 145400000 && (f - 145200000) % 25000 == 0) { // VHF R8-R15
     chan = 'R' + (((f - 145200000) / 25000) + 8).toString()
