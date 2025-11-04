@@ -1,4 +1,5 @@
 import { Hono } from 'hono'
+import { cors } from 'hono/cors'
 import { basicAuth } from 'hono/basic-auth'
 import { etag } from 'hono/etag'
 import { poweredBy } from 'hono/powered-by'
@@ -15,6 +16,15 @@ import * as db from './db'
 
 
 const app = new Hono<{ Bindings: CloudflareBindings }>()
+
+// CORS for API routes
+app.use('/v1/*', cors({
+  origin: '*',
+  allowMethods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowHeaders: ['Content-Type', 'Authorization'],
+  exposeHeaders: ['X-Response-Time'],
+  maxAge: 86400,
+}))
 app.route('/', api) // api will add its basePath (/api/v1)
 // Explicit handler for trailing-slash variant of the list endpoint to avoid 404s on '/v1/'
 app.get('/v1/', async (c) => {
