@@ -20,7 +20,7 @@ const disabled = z
   .boolean()
   .optional()
   .openapi({
-    description: "Is the repeater active",
+    description: "Whether the repeater is disabled (true) or enabled (false).",
     example: false,
     default: false,
   })
@@ -89,99 +89,68 @@ const power = z
     default: 0,
   })
 
-const modes_fm = z
-  .boolean()
-  .optional()
-  .openapi({
-    description: "Supports FM mode"
-  })
+// Modes: represent children as objects. Analog modes carry { enabled }.
+const modeAnalog = z.object({
+  enabled: z.boolean().optional().openapi({ description: 'Is the mode enabled' })
+}).optional()
 
-const modes_am = z
-  .boolean()
-  .optional()
-  .openapi({
-    description: "Supports AM mode"
-  })
+// Digital modes carry { enabled } and detail fields.
+const modeDmr = z.object({
+  enabled: z.boolean().optional(),
+  network: z.string().optional(),
+  color_code: z.string().optional(),
+  callid: z.string().optional(),
+  reflector: z.string().optional(),
+  ts1_groups: z.string().optional(),
+  ts2_groups: z.string().optional(),
+  info: z.string().optional(),
+}).optional().openapi({ description: 'DMR mode and details' })
 
-const modes_usb = z
-  .boolean()
-  .optional()
-  .openapi({
-    description: "Supports USB mode"
-  })
+const modeDstar = z.object({
+  enabled: z.boolean().optional(),
+  reflector: z.string().optional(),
+  module: z.string().optional(),
+  gateway: z.string().optional(),
+  info: z.string().optional(),
+}).optional().openapi({ description: 'D-STAR mode and details' })
 
-const modes_lsb = z
-  .boolean()
-  .optional()
-  .openapi({
-    description: "Supports LSB mode"
-  })
+const modeFusion = z.object({
+  enabled: z.boolean().optional(),
+  reflector: z.string().optional(),
+  tg: z.string().optional(),
+  room: z.string().optional(),
+  dgid: z.string().optional(),
+  wiresx_node: z.string().optional(),
+  info: z.string().optional(),
+}).optional().openapi({ description: 'Fusion/YSF/WIRES-X mode and details' })
 
-const modes_dmr = z
-  .boolean()
-  .optional()
-  .openapi({
-    description: "Supports DMR mode"
-  })
+const modeNxdn = z.object({
+  enabled: z.boolean().optional(),
+  network: z.string().optional(),
+  ran: z.string().optional(),
+}).optional().openapi({ description: 'NXDN mode and details' })
 
-const modes_dstar = z
-  .boolean()
-  .optional()
-  .openapi({
-    description: "Supports DSTAR mode"
-  })
-
-const modes_fusion = z
-  .boolean()
-  .optional()
-  .openapi({
-    description: "Supports FUSION/C4FM mode"
-  })
-
-const modes_nxdn = z
-  .boolean()
-  .optional()
-  .openapi({
-    description: "Supports NXDN mode"
-  })
-
-const modes_parrot = z
-  .boolean()
-  .optional()
-  .openapi({
-    description: "Repeater is a parrot"
-  })
-
-const modes_beacon = z
-  .boolean()
-  .optional()
-  .openapi({
-    description: "Repeater is a beacon"
-  })
-
-const modes = z
-  .object({
-    fm: modes_fm,
-    am: modes_am,
-    usb: modes_usb,
-    lsb: modes_lsb,
-    dmr: modes_dmr,
-    dstar: modes_dstar,
-    fusion: modes_fusion,
-    nxdn: modes_nxdn,
-    parrot: modes_parrot,
-    beacon: modes_beacon,
-  })
-  .openapi({
-    description: "Available modes for the repeater",
-    example: {
-      fm: true,
-      dmr: true,
-      dstar: true,
-      fusion: true,
-      nxdn: true,
-    }
-  })
+const modes = z.object({
+  fm: modeAnalog,
+  am: modeAnalog,
+  usb: modeAnalog,
+  lsb: modeAnalog,
+  dmr: modeDmr,
+  dstar: modeDstar,
+  fusion: modeFusion,
+  nxdn: modeNxdn,
+  parrot: modeAnalog,
+  beacon: modeAnalog,
+}).openapi({
+  description: 'Modes and per-mode metadata',
+  example: {
+    fm: { enabled: true },
+    dmr: { enabled: true, network: 'DMR+', color_code: '1', callid: '284040', reflector: 'XLX023 ipsc2' },
+    dstar: { enabled: true, reflector: 'XLX359 B' },
+    fusion: { enabled: true, reflector: 'YSF359', tg: '284' },
+    nxdn: { enabled: true, network: 'NXDNReflector', ran: '1' },
+  }
+})
 
 
 const freq_rx = z
@@ -269,6 +238,7 @@ const internet = z
     description: "Internet connectivity",
     example: { echolink: 9870 }
   })
+
 const coverage_map_json = z
   .string()
   .optional()
@@ -311,6 +281,7 @@ const RepeaterSchema = z.object({
   modes,
   freq,
   internet,
+  // Note: digital object removed; details live in modes children for digital modes
   coverage_map_json,
   added,
   updated,
@@ -471,6 +442,12 @@ const have_other = z
 
 const RepeaterQuerySchema = z.object({
   callsign,
+  disabled: z.coerce.boolean().optional().openapi({
+    description: 'Filter by disabled status. When true, return only disabled repeaters; when false (or omitted), return only enabled repeaters. If include_disabled=true is also set, include_disabled takes precedence and both are returned. Accepts true/false, 1/0, and their string forms.'
+  }),
+  include_disabled: z.coerce.boolean().optional().openapi({
+    description: 'When true, return both enabled and disabled repeaters (combined list). Accepts true/false, 1/0, and their string forms.'
+  }),
   keeper,
   place,
   location,
@@ -504,6 +481,8 @@ const RepeaterQuerySchema = z.object({
 
 const RepeaterQueryInternalSchema = z.object({
   callsign,
+  disabled: z.coerce.boolean().optional().openapi({ description: 'Internal: coerced boolean disabled filter.' }),
+  include_disabled: z.coerce.boolean().optional().openapi({ description: 'Internal: coerced boolean to include both disabled and enabled.' }),
   keeper,
   place,
   location,

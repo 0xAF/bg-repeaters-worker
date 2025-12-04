@@ -21,21 +21,14 @@ const app = new Hono<{ Bindings: CloudflareBindings }>()
 app.use('*', cors({
   origin: '*',
   allowMethods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-  allowHeaders: ['Content-Type', 'Authorization'],
-  exposeHeaders: ['X-Response-Time'],
+  allowHeaders: ['Content-Type', 'Authorization', 'X-Device-Id', 'X-Device-ID'],
+  exposeHeaders: ['X-Response-Time', 'X-New-JWT'],
   maxAge: 86400,
 }))
-app.route('/', api) // api will add its basePath (/api/v1)
-// Explicit handler for trailing-slash variant of the list endpoint to avoid 404s on '/v1/'
-app.get('/v1/', async (c) => {
-  const r = await db.getRepeaters(c.env.RepsDB, {} as any)
-  const err = r as any
-  if (err && err.failure) return c.json(err, err.code || 422)
-  return c.json(r, 200)
-})
+app.route('/', api) // api will add its basePath (/v1) and handle '/v1/' as well
 
 // app.use('/admin/*', basicAuth({
-//   verifyUser: (u, p, c) => { return (u === "admin" && p === c.env.ADMIN_PW) }
+//   verifyUser: (u, p, c) => { return (u === "admin" && p === c.env.SUPERADMIN_PW) }
 // }))
 // app.get('/admin/*', (c) => c.text('You are authorized'))
 // app.route('/', admin) // api will add its basePath (/admin)

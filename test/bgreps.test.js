@@ -19,18 +19,33 @@ if (typeof globalThis.btoa === 'undefined') {
   globalThis.btoa = (s) => Buffer.from(String(s), 'binary').toString('base64')
 }
 
-function createFetchSpy() {
+function makeResponse({ ok = true, status = ok ? 200 : 500, statusText, headers = {}, jsonData = {} }) {
+  const map = new Map(Object.entries(headers).map(([k, v]) => [String(k).toLowerCase(), v]))
+  if (!map.has('content-type')) map.set('content-type', 'application/json')
+  return {
+    ok,
+    status,
+    statusText: statusText || (ok ? 'OK' : 'ERR'),
+    headers: { get: (k) => map.get(String(k).toLowerCase()) || null },
+    json: async () => jsonData,
+    text: async () => JSON.stringify(jsonData)
+  }
+}
+
+function defaultResponder({ url, init }) {
+  if (url.endsWith('/admin/login')) {
+    return makeResponse({ jsonData: { token: 'jwt-test-token' } })
+  }
+  return makeResponse({ jsonData: { ok: true, url, method: init.method || 'GET' } })
+}
+
+function createFetchSpy(sequence = []) {
   const calls = []
   const fetch = async (url, init = {}) => {
+    const responder = sequence.length ? sequence.shift() : defaultResponder
+    const response = await responder({ url, init })
     calls.push({ url, init })
-    return {
-      ok: true,
-      status: 200,
-      statusText: 'OK',
-      headers: { get: (k) => (k.toLowerCase() === 'content-type' ? 'application/json' : null) },
-      json: async () => ({ ok: true, url, method: init.method || 'GET' }),
-      text: async () => JSON.stringify({ ok: true }),
-    }
+    return response
   }
   return { fetch, calls }
 }
@@ -87,14 +102,35 @@ test('createRepeater(data) POST with JSON body and headers', async () => {
   assert.deepEqual(JSON.parse(calls[0].init.body), payload)
 })
 
-test('updateRepeater sets Authorization when setAuth is used', async () => {
+test('updateRepeater performs login and uses Bearer token', async () => {
   const { fetch, calls } = createFetchSpy()
   const api = new BGRepeaters({ baseURL: BASE, fetch })
   api.setAuth('admin', 'secret')
   await api.updateRepeater('LZ0YYY', { place: 'New' })
-  const headers = calls[0].init.headers
-  const auth = headers.get('Authorization')
-  assert.ok(auth && auth.startsWith('Basic '))
+  assert.equal(calls.length, 2)
+  const loginHeaders = calls[0].init.headers
+  assert.ok(loginHeaders.get('Authorization').startsWith('Basic '))
+  const updateHeaders = calls[1].init.headers
+  assert.ok(updateHeaders.get('Authorization').startsWith('Bearer '))
+})
+
+test('authorization retries once on 401 and uses refreshed token for subsequent calls', async () => {
+  const responders = [
+    defaultResponder, // initial login
+    () => makeResponse({ ok: false, status: 401, statusText: 'Unauthorized', jsonData: { failure: true } }),
+    defaultResponder, // re-login after 401
+    ({ url, init }) => makeResponse({ jsonData: { ok: true, url, method: init.method || 'GET' }, headers: { 'X-New-JWT': 'jwt-after-retry' } }),
+    ({ url, init }) => makeResponse({ jsonData: { ok: true, url, method: init.method || 'GET' } })
+  ]
+  const { fetch, calls } = createFetchSpy(responders)
+  const api = new BGRepeaters({ baseURL: BASE, fetch, username: 'admin', password: 'secret' })
+  await api.deleteRepeater('LZ0AAA')
+  await api.deleteRepeater('LZ0BBB')
+  assert.equal(calls.length, 5, 'login + failing request + re-login + retried request + follow-up request')
+  const retryHeaders = calls[3].init.headers
+  assert.ok(retryHeaders.get('Authorization').startsWith('Bearer '), 'retry still sends bearer')
+  const followUpHeaders = calls[4].init.headers
+  assert.equal(followUpHeaders.get('Authorization'), 'Bearer jwt-after-retry', 'next request uses refreshed token')
 })
 
 test('deleteRepeater DELETE method', async () => {

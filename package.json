@@ -1,7 +1,7 @@
 {
 	"name": "repeaters-varna-radio",
 	"scripts": {
-		"dev": "wrangler dev",
+		"dev": "wrangler dev --port 8787",
 		"deploy": "wrangler deploy --minify",
 		"cf-typegen": "wrangler types --env-interface CloudflareBindings",
 		"pages-dev": "run-p pages-dev:*",

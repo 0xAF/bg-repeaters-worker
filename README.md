@@ -22,6 +22,8 @@ npm run deploy
 
 `bgreps.js` is a tiny, dependency-free client for the v1 API at `https://api.varna.radio/v1`.
 
+Current version: **1.4.1**
+
 It supports all endpoints:
 
 - GET    `/v1/`               → `getRepeaters(query?)`
@@ -45,6 +47,8 @@ It supports all endpoints:
   const api = new BGRepeaters({ baseURL: 'https://api.varna.radio/v1' })
   api.getRepeater('LZ0BOT').then(console.log)
   api.getRepeaters({ have_dmr: true, have_rx_from: 430000000, have_rx_to: 440000000 }).then(console.log)
+  // Include disabled repeaters together with enabled ones
+  api.getRepeaters({ include_disabled: true }).then(console.log)
 </script>
 ```
 
@@ -56,6 +60,10 @@ const api = new BGRepeaters({ baseURL: 'https://api.varna.radio/v1' })
 
 const one = await api.getRepeater('LZ0BOT')
 const list = await api.getRepeaters({ callsign: 'LZ0BOT' })
+// All repeaters including disabled
+const all = await api.getRepeaters({ include_disabled: true })
+// Only disabled repeaters
+const disabledOnly = await api.getRepeaters({ disabled: true })
 ```
 
 ### Write Operations (Basic Auth required)
@@ -73,6 +81,17 @@ await api.createRepeater({
   altitude: 0,
   modes: { fm: true },
   freq: { rx: 430000000, tx: 438000000, tone: 79.7 },
+  digital: {
+    dmr: {
+      network: 'DMR+',
+      color_code: '1',
+      callid: '284040',
+      reflector: 'XLX023 ipsc2',
+      ts1_groups: '284,91',
+      ts2_groups: '2840',
+      info: 'Static 284 on TS1'
+    }
+  }
 })
 
 // Update
@@ -95,12 +114,16 @@ const api = new BGRepeaters({
 })
 
 // Version
-console.log(BGRepeaters.VERSION) // e.g. '1.0.0'
-console.log(api.version)         // e.g. '1.0.0'
+console.log(BGRepeaters.VERSION) // e.g. '1.4.1'
+console.log(api.version)         // e.g. '1.4.1'
 
 // Read:
 await api.getRepeaters({ callsign: 'LZ0BOT' })
 await api.getRepeaters({ have_dmr: true, have_rx_from: 430000000, have_rx_to: 440000000 })
+// Include disabled repeaters together with enabled ones
+await api.getRepeaters({ include_disabled: true })
+// Only disabled repeaters
+await api.getRepeaters({ disabled: true })
 await api.getRepeater('LZ0BOT')
 
 // Write (Basic Auth):
@@ -117,7 +140,72 @@ const { lastChanged, changes } = await api.getChangelog()
 console.log(lastChanged, changes.length)
 ```
 
+### Flatten Helper
+
+Produces old root-level convenience fields (`mode_fm`, `freq_rx`, `dmr_network`, etc.) from the new `modes` and `freq` objects. This is optional syntactic sugar – not needed for new code.
+
+```js
+const api = new BGRepeaters({ baseURL: 'https://api.varna.radio/v1' })
+const r = await api.getRepeater('LZ0BOT')
+const flat = api.flatten(r)
+console.log(flat.mode_fm, flat.freq_rx, flat.dmr_network)
+```
+
+### Modes as Objects
+
+API responses now return `modes` with children as objects:
+
+```json
+{
+  "modes": {
+    "fm": { "enabled": true },
+    "dmr": { "enabled": true, "network": "DMR+", "color_code": "1", "callid": "284040", "reflector": "XLX023 ipsc2" },
+    "dstar": { "enabled": true, "reflector": "XLX359 B" }
+  }
+}
+```
+
+Digital details live directly inside their respective mode objects (no separate `digital` root key).
+
+### Disabled Repeaters & Query Flags
+
+Repeaters can be temporarily disabled (e.g. maintenance, hardware failure). They remain retrievable by exact callsign but are excluded from normal listings unless explicitly requested.
+
+Flags:
+
+- `disabled=true` — return only disabled repeaters.
+- `disabled=false` — return only enabled repeaters (same as omitted when `include_disabled` not set).
+- `include_disabled=true` — return both enabled and disabled repeaters in one response.
+
+Accepted truthy values for these flags: `true`, `1` (string or number). Falsy: `false`, `0`.
+
+Examples:
+
+```js
+// All enabled only (default behavior)
+await api.getRepeaters()
+
+// Only disabled
+await api.getRepeaters({ disabled: true })
+
+// Combined list
+await api.getRepeaters({ include_disabled: true })
+
+// Filtering while including disabled
+await api.getRepeaters({ include_disabled: true, have_dmr: true })
+
+// Specific callsign always returns even if disabled
+await api.getRepeater('LZ0ARD') // returns object with disabled: true
+```
+
+Edge cases:
+
+- If both `disabled=true` and `include_disabled=true` are supplied, `include_disabled` wins (combined list).
+- If an invalid value is passed (e.g. `disabled=abc`), it falls back to enabled-only.
+
+Return shape for a disabled repeater includes `"disabled": true` at top level.
 Notes:
 
 - `getRepeaters(query)`: You can call without params to fetch all repeaters, or provide filters like `{ callsign: 'LZ0BOT' }` or `{ have_dmr: true }`.
 - Query parameters align with the API (e.g., `have_dmr`, `have_rx_from`, `have_rx_to`, `callsign`, etc.). Booleans serialize to `true`/`false`. Arrays repeat the key.
+- Digital DMR fields now include `callid` and `reflector` in addition to `network`, `color_code`, `ts1_groups`, `ts2_groups`, and `info`.
