@@ -583,6 +583,70 @@ export const addRepeaterWithLog = async (DB: D1Database, who: string, p: Repeate
 
 const hasDiff = (a: any, b: any): boolean => JSON.stringify(a ?? null) !== JSON.stringify(b ?? null)
 
+const formatDiffValue = (value: any): string => {
+  if (value === null || value === undefined || value === '') return 'none'
+  if (typeof value === 'boolean') return value ? 'true' : 'false'
+  if (typeof value === 'number') return Number.isFinite(value) ? String(value) : 'NaN'
+  if (value instanceof Date) return value.toISOString()
+  if (Array.isArray(value)) {
+    if (!value.length) return 'none'
+    return value.map((v) => (typeof v === 'object' ? JSON.stringify(v) : String(v))).join(' | ')
+  }
+  if (typeof value === 'object') {
+    try {
+      return JSON.stringify(value)
+    } catch (err) {
+      return String(value)
+    }
+  }
+  return String(value)
+}
+
+type FieldDiffDescriptor = { name: string; before: any; after: any }
+
+const formatFieldDiffs = (label: string, descriptors: FieldDiffDescriptor[]): string | null => {
+  const changes = descriptors
+    .filter(({ before, after }) => hasDiff(before, after))
+    .map(({ name, before, after }) => `${name}: ${formatDiffValue(before)} -> ${formatDiffValue(after)}`)
+  if (!changes.length) return null
+  return `${label} (${changes.join('; ')})`
+}
+
+const describeDigitalModeChanges = (before?: Repeater['modes'], after?: Repeater['modes']): string[] => {
+  const digitalKeys = [
+    { key: 'dmr' as const, label: 'DMR' },
+    { key: 'dstar' as const, label: 'D-STAR' },
+    { key: 'fusion' as const, label: 'Fusion' },
+    { key: 'nxdn' as const, label: 'NXDN' },
+  ]
+  const messages: string[] = []
+  for (const { key, label } of digitalKeys) {
+    const prev = before?.[key]
+    const next = after?.[key]
+    if (!hasDiff(prev, next)) continue
+    const parts: string[] = []
+    const prevEnabled = !!prev?.enabled
+    const nextEnabled = !!next?.enabled
+    if (prevEnabled !== nextEnabled) {
+      parts.push(`enabled: ${formatDiffValue(prevEnabled)} -> ${formatDiffValue(nextEnabled)}`)
+    }
+    const detailKeys = new Set([...Object.keys(prev || {}), ...Object.keys(next || {})])
+    detailKeys.delete('enabled')
+    const detailChanges: string[] = []
+    for (const field of detailKeys) {
+      const beforeVal = (prev as any)?.[field]
+      const afterVal = (next as any)?.[field]
+      if (hasDiff(beforeVal, afterVal)) {
+        detailChanges.push(`${field}: ${formatDiffValue(beforeVal)} -> ${formatDiffValue(afterVal)}`)
+      }
+    }
+    if (detailChanges.length) parts.push(detailChanges.join(', '))
+    if (!parts.length) parts.push('details updated')
+    messages.push(`${label} ${parts.join('; ')}`.trim())
+  }
+  return messages
+}
+
 export const updateRepeaterWithLog = async (DB: D1Database, who: string, callsign: string, p: Repeater): Promise<Repeater | ErrorJSON> => {
   const before = await getRepeater(DB, callsign)
   if ((before as any).failure) return before as ErrorJSON
@@ -591,20 +655,77 @@ export const updateRepeaterWithLog = async (DB: D1Database, who: string, callsig
   const after = res as any
   const msgs: string[] = []
   const old = before as any
-  if (old.callsign !== after.callsign) msgs.push(`Renamed to ${after.callsign}`)
-  if (old.disabled !== after.disabled) msgs.push(after.disabled ? 'Disabled repeater' : 'Enabled repeater')
-  if (hasDiff(old.place, after.place) || hasDiff(old.location, after.location)) msgs.push('updated location')
-  if (hasDiff(old.freq, after.freq)) msgs.push('updated frequencies')
-  if (hasDiff(old.modes, after.modes)) msgs.push('updated modes')
-  if (hasDiff(old.internet, after.internet)) msgs.push('updated internet')
-  if (hasDiff(old.digital, after.digital)) msgs.push('updated digital info')
-  if (hasDiff(old.info, after.info)) msgs.push('updated info')
-  if (hasDiff(old.power, after.power)) msgs.push('updated power')
-  if (hasDiff(old.altitude, after.altitude)) msgs.push('updated altitude')
-  if (hasDiff(old.coverage_map_json, after.coverage_map_json)) msgs.push('updated coverage map')
-  const base = `${who.toUpperCase()}: updated repeater ${callsign}`
-  const details = msgs.length ? `. ${msgs.join('. ')}` : ''
-  await addChangelog(DB, who, base + details)
+  if (old.callsign !== after.callsign) msgs.push(`Renamed ${formatDiffValue(old.callsign)} -> ${formatDiffValue(after.callsign)}`)
+  if (old.disabled !== after.disabled) msgs.push(`Disabled flag: ${formatDiffValue(old.disabled)} -> ${formatDiffValue(after.disabled)}`)
+  if (hasDiff(old.place, after.place) || hasDiff(old.location, after.location)) {
+    const locationMsg = formatFieldDiffs('Updated location', [
+      { name: 'place', before: old.place, after: after.place },
+      { name: 'location', before: old.location, after: after.location },
+    ])
+    if (locationMsg) msgs.push(locationMsg)
+  }
+  if (hasDiff(old.freq, after.freq)) {
+    const freqMsg = formatFieldDiffs('Updated frequencies', [
+      { name: 'rx', before: old.freq?.rx, after: after.freq?.rx },
+      { name: 'tx', before: old.freq?.tx, after: after.freq?.tx },
+      { name: 'tone', before: old.freq?.tone, after: after.freq?.tone },
+      { name: 'channel', before: old.freq?.channel, after: after.freq?.channel },
+    ])
+    if (freqMsg) msgs.push(freqMsg)
+  }
+  if (hasDiff(old.modes, after.modes)) {
+    const analogMsg = formatFieldDiffs('Updated modes', [
+      { name: 'fm', before: old.modes?.fm?.enabled ?? false, after: after.modes?.fm?.enabled ?? false },
+      { name: 'am', before: old.modes?.am?.enabled ?? false, after: after.modes?.am?.enabled ?? false },
+      { name: 'usb', before: old.modes?.usb?.enabled ?? false, after: after.modes?.usb?.enabled ?? false },
+      { name: 'lsb', before: old.modes?.lsb?.enabled ?? false, after: after.modes?.lsb?.enabled ?? false },
+      { name: 'parrot', before: old.modes?.parrot?.enabled ?? false, after: after.modes?.parrot?.enabled ?? false },
+      { name: 'beacon', before: old.modes?.beacon?.enabled ?? false, after: after.modes?.beacon?.enabled ?? false },
+    ])
+    if (analogMsg) msgs.push(analogMsg)
+    msgs.push(...describeDigitalModeChanges(old.modes, after.modes))
+  }
+  if (hasDiff(old.internet, after.internet)) {
+    const internetMsg = formatFieldDiffs('Updated internet', [
+      { name: 'echolink', before: old.internet?.echolink, after: after.internet?.echolink },
+      { name: 'allstarlink', before: old.internet?.allstarlink, after: after.internet?.allstarlink },
+      { name: 'zello', before: old.internet?.zello, after: after.internet?.zello },
+      { name: 'other', before: old.internet?.other, after: after.internet?.other },
+    ])
+    if (internetMsg) msgs.push(internetMsg)
+  }
+  if (hasDiff(old.digital, after.digital)) {
+    const digitalMsg = formatFieldDiffs('Updated digital info', [
+      { name: 'digital', before: old.digital, after: after.digital },
+    ])
+    if (digitalMsg) msgs.push(digitalMsg)
+  }
+  if (hasDiff(old.info, after.info)) {
+    const infoMsg = formatFieldDiffs('Updated info', [
+      { name: 'lines', before: old.info, after: after.info },
+    ])
+    if (infoMsg) msgs.push(infoMsg)
+  }
+  if (hasDiff(old.power, after.power)) {
+    const powerMsg = formatFieldDiffs('Updated power', [
+      { name: 'power', before: old.power, after: after.power },
+    ])
+    if (powerMsg) msgs.push(powerMsg)
+  }
+  if (hasDiff(old.altitude, after.altitude)) {
+    const altitudeMsg = formatFieldDiffs('Updated altitude', [
+      { name: 'altitude', before: old.altitude, after: after.altitude },
+    ])
+    if (altitudeMsg) msgs.push(altitudeMsg)
+  }
+  if (hasDiff(old.coverage_map_json, after.coverage_map_json)) {
+    const coverageMsg = formatFieldDiffs('Updated coverage map', [
+      { name: 'coverage_map_json', before: old.coverage_map_json, after: after.coverage_map_json },
+    ])
+    if (coverageMsg) msgs.push(coverageMsg)
+  }
+  const details = msgs.length ? `: ${msgs.join('. ')}.` : ''
+  await addChangelog(DB, who, `${callsign}` + details)
   return res
 }
 

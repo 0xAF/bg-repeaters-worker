@@ -22,7 +22,7 @@ npm run deploy
 
 `bgreps.js` is a tiny, dependency-free client for the v1 API at `https://api.varna.radio/v1`.
 
-Current version: **1.4.1**
+Current version: **2.0.0**
 
 It supports all endpoints:
 
@@ -138,18 +138,47 @@ await api.getDoc()
 // Changelog:
 const { lastChanged, changes } = await api.getChangelog()
 console.log(lastChanged, changes.length)
+
+// Build a CHIRP CSV (Node/browser)
+const payload = await api.buildChirpCsv({ mode: 'dmr' })
+require('node:fs').writeFileSync(payload.filename, payload.bytes)
+
+// Browser-only: fetch + trigger download in one call
+await api.downloadChirpCsv({ mode: 'analog' })
 ```
 
-### Flatten Helper
+### CHIRP CSV Export Helper
 
-Produces old root-level convenience fields (`mode_fm`, `freq_rx`, `dmr_network`, etc.) from the new `modes` and `freq` objects. This is optional syntactic sugar – not needed for new code.
+`buildChirpCsv` produces a CHIRP-compatible CSV from the latest repeater list. It returns an object with:
+
+- `filename` – Suggested file name (`CHIRP_repeaters_<mode>.csv`).
+- `mimeType` – Always `text/csv`.
+- `mode` – The applied repeater filter (`all`, `analog`, `dmr`, `dstar`, `fusion`, `nxdn`, `parrot`).
+- `rowCount` – Number of exported entries.
+- `bytes` – `Uint8Array` with a UTF-8 BOM; write directly to disk or stream.
+- `csvText` – Convenience string copy of the payload.
+
+Usage patterns:
 
 ```js
-const api = new BGRepeaters({ baseURL: 'https://api.varna.radio/v1' })
-const r = await api.getRepeater('LZ0BOT')
-const flat = api.flatten(r)
-console.log(flat.mode_fm, flat.freq_rx, flat.dmr_network)
+// Instance – automatically fetches repeaters unless you provide opts.repeaters
+const payload = await api.buildChirpCsv({ mode: 'all', includeDisabled: true })
+
+// Static – supply repeaters manually (useful in tests or offline transforms)
+const payload = BGRepeaters.buildChirpCsv({ repeaters, mode: 'dmr' })
+
+// Browser-only convenience: fetch + generate + trigger download
+await api.downloadChirpCsv({ mode: 'analog' })
 ```
+
+Optional options:
+
+- `mode` (default `all`) – Matches the filter buttons in the public map (`all`, `analog`, `dmr`, `dstar`, `fusion`, `nxdn`, `parrot`).
+- `repeaters` – Pre-fetched API payload (skips the internal `getRepeaters()` call). Required for the static helper.
+- `includeDisabled` – Pass `true` to include disabled entries when the helper performs the fetch.
+- `query` – Extra filters forwarded to `getRepeaters()` (e.g., `{ have_dmr: true }`).
+
+Node users should persist `payload.bytes`. Browser users can call `downloadChirpCsv` (instance or static) to emit a `<a download>` click that saves the file locally.
 
 ### Modes as Objects
 
@@ -166,6 +195,8 @@ API responses now return `modes` with children as objects:
 ```
 
 Digital details live directly inside their respective mode objects (no separate `digital` root key).
+
+> **Note:** v2.0.0 removed the legacy `flatten()` helper. Consumers should read values directly from `modes`, `freq`, and `internet` instead of relying on synthesized `mode_*` or `freq_*` fields.
 
 ### Disabled Repeaters & Query Flags
 

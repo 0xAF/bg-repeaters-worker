@@ -40,9 +40,11 @@
  *   Example: api.getRepeaters({ include_disabled: true })
  * - Convenience helper getAllRepeaters() wraps that flag.
  *
- * @version 1.5.0
+ * @version 2.0.0
  * @license MIT - https://af.mit-license.org/
  */
+
+const BGREPEATERS_VERSION = '2.0.0';
 
 (function (root, factory) {
     if (typeof module === 'object' && typeof module.exports === 'object') {
@@ -80,81 +82,6 @@
 
         /** Library version (instance accessor) */
         get version() { return BGRepeaters.VERSION; }
-
-        /**
-         * Flatten a repeater object by adding legacy root-level fields alongside the nested structure.
-         * This is a convenience for consumers still expecting old keys like mode_fm, freq_rx, net_echolink, dmr_* etc.
-         * Does not mutate the original object by default.
-         * @param {Object} repeater - Repeater as returned by the API
-         * @param {Object} [opts]
-         * @param {boolean} [opts.mutate=false] - If true, mutate the input object; otherwise return a shallow-cloned copy
-         * @returns {Object} - Repeater with additional legacy root-level fields
-         */
-        static flatten(repeater, opts = {}) {
-            if (!repeater || typeof repeater !== 'object') return repeater;
-            const mutate = !!opts.mutate;
-            const r = mutate ? repeater : { ...repeater };
-            const m = r.modes || {};
-            const f = r.freq || {};
-            const net = r.internet || {};
-
-            // Modes (numeric 1/0 like the old API). Support both boolean and object children.
-            const enabled = (v) => (typeof v === 'object' && v !== null ? !!v.enabled : !!v);
-            r.mode_fm = enabled(m.fm) ? 1 : 0;
-            r.mode_am = enabled(m.am) ? 1 : 0;
-            r.mode_usb = enabled(m.usb) ? 1 : 0;
-            r.mode_lsb = enabled(m.lsb) ? 1 : 0;
-            r.mode_dmr = enabled(m.dmr) ? 1 : 0;
-            r.mode_dstar = enabled(m.dstar) ? 1 : 0;
-            r.mode_fusion = enabled(m.fusion) ? 1 : 0;
-            r.mode_nxdn = enabled(m.nxdn) ? 1 : 0;
-            r.mode_parrot = enabled(m.parrot) ? 1 : 0;
-            r.mode_beacon = enabled(m.beacon) ? 1 : 0;
-
-            // Frequencies
-            r.freq_rx = f.rx;
-            r.freq_tx = f.tx;
-            r.tone = f.tone;
-
-            // Internet
-            r.net_echolink = net.echolink;
-            r.net_allstarlink = net.allstarlink;
-            r.net_zello = net.zello;
-            r.net_other = net.other;
-
-            // Digital details now live under modes children
-            const dmr = m.dmr || {};
-            r.dmr_network = dmr.network;
-            r.dmr_ts1_groups = dmr.ts1_groups;
-            r.dmr_ts2_groups = dmr.ts2_groups;
-            r.dmr_info = dmr.info;
-            r.dmr_color_code = dmr.color_code;
-            r.dmr_callid = dmr.callid;
-            r.dmr_reflector = dmr.reflector;
-
-            const dstar = m.dstar || {};
-            r.dstar_reflector = dstar.reflector;
-            r.dstar_info = dstar.info;
-            r.dstar_module = dstar.module;
-            r.dstar_gateway = dstar.gateway;
-
-            const fusion = m.fusion || {};
-            r.fusion_reflector = fusion.reflector;
-            r.fusion_tg = fusion.tg;
-            r.fusion_info = fusion.info;
-            r.fusion_room = fusion.room;
-            r.fusion_dgid = fusion.dgid;
-            r.fusion_wiresx_node = fusion.wiresx_node;
-
-            const nxdn = m.nxdn || {};
-            r.nxdn_ran = nxdn.ran;
-            r.nxdn_network = nxdn.network;
-
-            return r;
-        }
-
-        /** Instance convenience wrapper around static flatten. */
-        flatten(repeater, opts = {}) { return BGRepeaters.flatten(repeater, opts); }
 
         /**
          * Convert boolean modes into objects and merge digital details under the respective mode objects.
@@ -201,6 +128,37 @@
 
         /** Instance convenience wrapper for modesToObjects. */
         modesToObjects(repeater, opts = {}) { return BGRepeaters.modesToObjects(repeater, opts); }
+
+        /** Build a CHIRP-compatible CSV payload from API repeaters (static usage requires opts.repeaters). */
+        static buildChirpCsv(opts = {}) {
+            if (!Array.isArray(opts.repeaters)) throw new Error('BGRepeaters.buildChirpCsv(opts) requires opts.repeaters when called statically.');
+            return buildChirpPayloadFromRepeaters(opts.repeaters, opts);
+        }
+
+        /** Instance helper: fetch repeaters (unless provided) and build CHIRP CSV payload. */
+        async buildChirpCsv(opts = {}) {
+            if (Array.isArray(opts.repeaters)) {
+                return buildChirpPayloadFromRepeaters(opts.repeaters, opts);
+            }
+            const query = { ...(opts.query || {}) };
+            if (opts.includeDisabled) query.include_disabled = true;
+            const hasQuery = Object.keys(query).length > 0;
+            const list = await this.getRepeaters(hasQuery ? query : undefined);
+            return buildChirpPayloadFromRepeaters(Array.isArray(list) ? list : [], opts);
+        }
+
+        /** Browser-only convenience: build + trigger download, returning the payload for further use. */
+        static downloadChirpCsv(opts = {}) {
+            const payload = BGRepeaters.buildChirpCsv(opts);
+            triggerBrowserDownload(payload);
+            return payload;
+        }
+
+        async downloadChirpCsv(opts = {}) {
+            const payload = await this.buildChirpCsv(opts);
+            triggerBrowserDownload(payload);
+            return payload;
+        }
 
         /** Store credentials used for JWT login (clears cached token). */
         setAuth(username, password) {
@@ -488,8 +446,302 @@
         }
     }
 
+    // Internal CSV helper constants and functions
+    const CSV_NEWLINE = '\r\n';
+    const CSV_BOM = '\ufeff';
+    const CSV_MIME_TYPE = 'text/csv';
+    const CSV_FILENAME_PREFIX = 'CHIRP_repeaters';
+    const DEFAULT_TONE = 79.7;
+    const MAX_SIMPLE_OFFSET_MHZ = 8;
+    const MODE_ALIAS = Object.freeze({
+        fm: 'analog',
+        fm_analog: 'analog',
+        analog: 'analog',
+        am: 'analog',
+        usb: 'analog',
+        lsb: 'analog',
+        ssb: 'analog',
+        simplex: 'analog',
+        beacon: 'analog',
+        parrot: 'parrot',
+        dmr: 'dmr',
+        dstar: 'dstar',
+        fusion: 'fusion',
+        ysf: 'fusion',
+        c4fm: 'fusion',
+        nxdn: 'nxdn',
+    });
+    const MODE_FILTERS = Object.freeze({
+        all: () => true,
+        analog: (map) => !!map.analog,
+        dmr: (map) => !!map.dmr,
+        dstar: (map) => !!map.dstar,
+        fusion: (map) => !!map.fusion,
+        nxdn: (map) => !!map.nxdn,
+        parrot: (map) => !!map.parrot,
+    });
+    const CHIRP_COLUMNS = Object.freeze([
+        { key: 'Location', header: 'Location' },
+        { key: 'Name', header: 'Name' },
+        { key: 'Frequency', header: 'Frequency' },
+        { key: 'Duplex', header: 'Duplex' },
+        { key: 'Offset', header: 'Offset' },
+        { key: 'Tone', header: 'Tone' },
+        { key: 'rToneFreq', header: 'rToneFreq' },
+        { key: 'cToneFreq', header: 'cToneFreq' },
+        { key: 'Mode', header: 'Mode' },
+        { key: 'Comment', header: 'Comment' },
+    ]);
+
+    function resolveMode(mode) {
+        const key = typeof mode === 'string' && mode.trim().length ? mode.trim().toLowerCase() : 'all';
+        if (!MODE_FILTERS[key]) throw new Error(`Unsupported CHIRP export mode: ${mode}`);
+        return key;
+    }
+
+    function hzToMHz(value) {
+        if (value === undefined || value === null) return undefined;
+        const num = typeof value === 'number' ? value : Number(value);
+        if (!Number.isFinite(num)) return undefined;
+        if (Math.abs(num) > 1000) return num / 1e6;
+        return num;
+    }
+
+    function normalizeInfoLines(info) {
+        if (Array.isArray(info)) {
+            return info.map(stripHtml).map(trimString).filter(Boolean);
+        }
+        if (info === undefined || info === null) return [];
+        return [stripHtml(info)].map(trimString).filter(Boolean);
+    }
+
+    function stripHtml(value) {
+        return String(value === undefined || value === null ? '' : value).replace(/<[^>]+>/g, '');
+    }
+
+    function trimString(value) {
+        return String(value).trim();
+    }
+
+    function extractTone(freq = {}) {
+        const candidates = [freq.tone, freq.ctcss];
+        for (const candidate of candidates) {
+            const num = toNumber(candidate);
+            if (Number.isFinite(num)) return num;
+        }
+        return undefined;
+    }
+
+    function toNumber(value) {
+        if (value === undefined || value === null) return undefined;
+        if (typeof value === 'number') return value;
+        if (typeof value === 'string' && value.trim().length) {
+            const parsed = Number(value);
+            return Number.isFinite(parsed) ? parsed : undefined;
+        }
+        return undefined;
+    }
+
+    function isModeEnabled(value) {
+        if (value === undefined || value === null) return false;
+        if (typeof value === 'boolean') return value;
+        if (typeof value === 'number') return value !== 0;
+        if (typeof value === 'string') return value.trim().length > 0;
+        if (typeof value === 'object') {
+            if (Object.prototype.hasOwnProperty.call(value, 'enabled')) return !!value.enabled;
+            return Object.values(value).some((v) => isModeEnabled(v));
+        }
+        return false;
+    }
+
+    function collectModeTags(modes) {
+        const out = {};
+        if (!modes || typeof modes !== 'object') return out;
+        Object.keys(modes).forEach((key) => {
+            const alias = MODE_ALIAS[key.toLowerCase()] || key.toLowerCase();
+            if (isModeEnabled(modes[key])) out[alias] = true;
+        });
+        return out;
+    }
+
+    function buildLocationLabel(place, extra) {
+        const base = typeof place === 'string' ? place.trim() : (place ? String(place).trim() : '');
+        const extraPart = typeof extra === 'string' && extra.trim().length ? ` - ${extra.trim()}` : '';
+        return (base || extraPart) ? `${base}${extraPart}` : '';
+    }
+
+    function getChannelFromMHz(rxMHz) {
+        if (!Number.isFinite(rxMHz)) return 'N/A';
+        const f = Math.round(rxMHz * 10000);
+        let chan = 'N/A';
+        if (f >= 1452000 && f < 1454000 && (f - 1452000) % 250 === 0) {
+            chan = 'R' + parseInt(((f - 1452000) / 250) + 8, 10);
+        } else if (f >= 1456000 && f < 1460000 && (f - 1456000) % 250 === 0) {
+            chan = 'R' + parseInt((f - 1456000) / 250, 10);
+        } else if (f >= 4300000 && f < 4400000 && (f - 4300000) % 125 === 0) {
+            const idx = ((f - 4300000) / 125).toFixed(0);
+            chan = 'RU' + idx.padStart(3, '0');
+        }
+        if (f >= 1450000 && f < 1460000 && (f - 1450000) % 125 === 0) {
+            const rv = ((f - 1450000) / 125).toFixed(0).padStart(2, '0');
+            chan = (chan === 'N/A' ? '' : `${chan}, `) + `RV${rv}`;
+        }
+        return chan;
+    }
+
+    function normalizeRepeaterForCsv(repeater) {
+        if (!repeater || typeof repeater !== 'object') return null;
+        if (!repeater.callsign) return null;
+        const freq = repeater.freq || {};
+        const rxMHz = hzToMHz(freq.tx);
+        const txMHz = hzToMHz(freq.rx);
+        if (!Number.isFinite(rxMHz) || !Number.isFinite(txMHz)) return null;
+        const channel = typeof freq.channel === 'string' && freq.channel.trim().length ? freq.channel.trim() : getChannelFromMHz(rxMHz);
+        const tone = extractTone(freq);
+        const infoLines = normalizeInfoLines(repeater.info);
+        const locationLabel = buildLocationLabel(repeater.place, repeater.location);
+        const modesMap = collectModeTags(repeater.modes || {});
+        const modesList = Object.keys(modesMap).sort();
+        return {
+            callsign: String(repeater.callsign),
+            rxMHz,
+            txMHz,
+            tone,
+            channel: channel || 'N/A',
+            infoLines,
+            locationLabel,
+            modesMap,
+            modesList,
+        };
+    }
+
+    function formatNumber(value, digits) {
+        return Number.isFinite(value) ? Number(value).toFixed(digits) : '';
+    }
+
+    function formatFrequencyValue(value) {
+        if (!Number.isFinite(value)) return '';
+        const str = Number(value).toFixed(6);
+        return str.replace(/(\.\d{3})000$/, '$1');
+    }
+
+    function sanitizeComment(value) {
+        if (!value) return '';
+        return String(value).replace(/\r?\n/g, ', ').replace(/,?\s*$/, '');
+    }
+
+    function buildCommentParts(data) {
+        const parts = [];
+        if (data.channel && data.channel !== 'N/A') parts.push(`Chan: ${data.channel}`);
+        const modesLabel = data.modesList.length ? data.modesList.join('+') : 'n/a';
+        parts.push(`Modes: ${modesLabel}`);
+        if (data.locationLabel) parts.push(data.locationLabel);
+        if (data.infoLines.length) parts.push(data.infoLines.join(', '));
+        return parts;
+    }
+
+    function buildChirpRow(data, index) {
+        const delta = data.txMHz - data.rxMHz;
+        let duplex = '';
+        if (Number.isFinite(delta)) {
+            if (delta < 0) duplex = '-';
+            else if (delta > 0) duplex = '+';
+        }
+        let offset = Math.abs(delta);
+        if (!Number.isFinite(offset)) offset = 0;
+        if (offset > MAX_SIMPLE_OFFSET_MHZ) {
+            duplex = 'split';
+            offset = data.txMHz;
+        }
+        const toneValue = Number.isFinite(data.tone) && data.tone > 0 ? data.tone : undefined;
+        const toneLabel = toneValue !== undefined ? 'TSQL' : '';
+        const toneFreq = toneValue !== undefined ? toneValue : DEFAULT_TONE;
+        const csvMode = data.modesMap.analog || data.modesMap.parrot ? 'FM' : (data.modesMap.dmr ? 'DMR' : 'Auto');
+        const comment = sanitizeComment(buildCommentParts(data).join('\r\n'));
+        return {
+            Location: String(index),
+            Name: data.callsign || '',
+            Frequency: formatFrequencyValue(data.rxMHz),
+            Duplex: duplex,
+            Offset: formatFrequencyValue(offset),
+            Tone: toneLabel,
+            rToneFreq: formatNumber(toneFreq, 1),
+            cToneFreq: formatNumber(toneFreq, 1),
+            Mode: csvMode,
+            Comment: comment,
+        };
+    }
+
+    function csvEscape(value) {
+        const str = value === undefined || value === null ? '' : String(value);
+        if (/[",\r\n]/.test(str)) return '"' + str.replace(/"/g, '""') + '"';
+        return str;
+    }
+
+    function buildCsvText(rows) {
+        const header = CHIRP_COLUMNS.map((col) => col.header).join(',');
+        const body = rows.map((row) => CHIRP_COLUMNS.map((col) => csvEscape(row[col.key])).join(',')).join(CSV_NEWLINE);
+        const content = body.length ? `${header}${CSV_NEWLINE}${body}` : header;
+        return `${CSV_BOM}${content}${CSV_NEWLINE}`;
+    }
+
+    function stringToUint8(str) {
+        if (typeof TextEncoder !== 'undefined') {
+            return new TextEncoder().encode(str);
+        }
+        if (typeof Buffer !== 'undefined') {
+            return Uint8Array.from(Buffer.from(str, 'utf8'));
+        }
+        throw new Error('TextEncoder is not available; please provide a polyfill before using buildChirpCsv.');
+    }
+
+    function buildChirpPayloadFromRepeaters(repeaters, opts = {}) {
+        if (!Array.isArray(repeaters)) throw new Error('buildChirpCsv requires a repeaters array.');
+        const mode = resolveMode(opts.mode);
+        const predicate = MODE_FILTERS[mode] || MODE_FILTERS.all;
+        const normalized = repeaters.map(normalizeRepeaterForCsv).filter(Boolean);
+        const filtered = normalized.filter((item) => predicate(item.modesMap || {}));
+        const rows = filtered.map((item, idx) => buildChirpRow(item, idx));
+        const csvText = buildCsvText(rows);
+        const filename = `${CSV_FILENAME_PREFIX}_${mode}.csv`;
+        return {
+            mode,
+            filename,
+            mimeType: CSV_MIME_TYPE,
+            rowCount: rows.length,
+            bytes: stringToUint8(csvText),
+            csvText,
+        };
+    }
+
+    function ensureBrowserEnvironment() {
+        if (typeof window === 'undefined' || typeof document === 'undefined') {
+            throw new Error('downloadChirpCsv() is only available in browser environments.');
+        }
+    }
+
+    function triggerBrowserDownload(payload) {
+        ensureBrowserEnvironment();
+        if (!payload || !(payload.bytes instanceof Uint8Array)) throw new Error('Invalid CSV payload provided for download.');
+        const blob = new Blob([payload.bytes], { type: payload.mimeType || CSV_MIME_TYPE });
+        const link = document.createElement('a');
+        link.href = URL.createObjectURL(blob);
+        link.download = payload.filename || `${CSV_FILENAME_PREFIX}.csv`;
+        link.style.position = 'fixed';
+        link.style.left = '-9999px';
+        document.body.appendChild(link);
+        try {
+            link.click();
+        } finally {
+            setTimeout(() => {
+                URL.revokeObjectURL(link.href);
+                link.remove();
+            }, 1000);
+        }
+    }
+
     // Static version (class-level)
-    BGRepeaters.VERSION = '1.5.0';
+    BGRepeaters.VERSION = BGREPEATERS_VERSION;
 
     // JSDoc quick examples
     /**

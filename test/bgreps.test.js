@@ -18,6 +18,11 @@ if (typeof globalThis.Headers === 'undefined') {
 if (typeof globalThis.btoa === 'undefined') {
   globalThis.btoa = (s) => Buffer.from(String(s), 'binary').toString('base64')
 }
+if (typeof globalThis.TextEncoder === 'undefined' || typeof globalThis.TextDecoder === 'undefined') {
+  const { TextEncoder, TextDecoder } = require('node:util')
+  if (typeof globalThis.TextEncoder === 'undefined') globalThis.TextEncoder = TextEncoder
+  if (typeof globalThis.TextDecoder === 'undefined') globalThis.TextDecoder = TextDecoder
+}
 
 function makeResponse({ ok = true, status = ok ? 200 : 500, statusText, headers = {}, jsonData = {} }) {
   const map = new Map(Object.entries(headers).map(([k, v]) => [String(k).toLowerCase(), v]))
@@ -155,4 +160,60 @@ test('getChangelog requests /v1/changelog and expects object with lastChanged an
   assert.equal(new URL(calls[0].url).pathname, '/v1/changelog')
   assert.equal((calls[0].init.method || 'GET'), 'GET')
   assert.ok(typeof res === 'object' && res !== null)
+})
+
+test('static buildChirpCsv formats tone columns and filters modes', () => {
+  const repeaters = [
+    {
+      callsign: 'LZ0AAA',
+      place: 'София',
+      info: ['Analog repeater'],
+      freq: { rx: 145050000, tx: 145650000, tone: 88.5 },
+      modes: { fm: true }
+    },
+    {
+      callsign: 'LZ0BBB',
+      place: 'Благоевград',
+      info: 'Digital node',
+      freq: { rx: 431550000, tx: 439150000 },
+      modes: { dmr: true }
+    }
+  ]
+  const payload = BGRepeaters.buildChirpCsv({ repeaters })
+  assert.equal(payload.rowCount, 2)
+  assert.ok(payload.bytes instanceof Uint8Array)
+  const csv = payload.csvText.replace(/^\ufeff/, '')
+  assert.ok(csv.includes('LZ0AAA'), 'first row is present')
+  assert.ok(csv.includes('145.650,-,0.600,TSQL,88.5,88.5,FM'), 'tone-enabled row formatted correctly')
+  assert.ok(csv.includes('LZ0BBB'), 'second row is present')
+  assert.ok(csv.includes('439.150,-,7.600,,79.7,79.7,DMR'), 'tone-less row defaults tone fields')
+  const dmrOnly = BGRepeaters.buildChirpCsv({ repeaters, mode: 'dmr' })
+  const dmrCsv = dmrOnly.csvText.replace(/^\ufeff/, '')
+  assert.equal(dmrOnly.rowCount, 1)
+  assert.ok(!dmrCsv.includes('LZ0AAA'))
+  assert.ok(dmrCsv.includes('LZ0BBB'))
+})
+
+test('instance buildChirpCsv fetches repeaters when array not provided', async () => {
+  const responders = [
+    ({ url }) => {
+      if (url.endsWith('/')) {
+        return makeResponse({ jsonData: [
+          {
+            callsign: 'LZ0DMR',
+            place: 'Test',
+            info: 'Auto-generated',
+            freq: { rx: 439450000, tx: 431850000 },
+            modes: { dmr: true }
+          }
+        ] })
+      }
+      return makeResponse({ jsonData: { ok: true } })
+    }
+  ]
+  const { fetch, calls } = createFetchSpy(responders)
+  const api = new BGRepeaters({ baseURL: BASE, fetch })
+  const payload = await api.buildChirpCsv({ mode: 'dmr' })
+  assert.equal(calls.length, 1)
+  assert.ok(payload.csvText.includes('LZ0DMR'))
 })
