@@ -4,6 +4,7 @@ import { OpenAPIHono } from '@hono/zod-openapi'
 import { RepeaterRequestSchema, RepeaterSchema, RepeaterQuerySchema } from './api/RepeaterSchema'
 import { ChangelogEntrySchema, ChangelogResponseSchema } from './api/ChangelogSchema'
 import { UserCreateSchema, UserUpdateSchema, UserResponseSchema, UsersListSchema, UserRequestSchema } from './api/UserSchema'
+import { RequestSubmissionSchema, RequestSubmissionResponseSchema, RequestListQuerySchema, RequestListResponseSchema, RequestRecordSchema, RequestIdParamSchema, RequestUpdateSchema } from './api/RequestSchema'
 import { ErrorSchema } from './api/ErrorSchema'
 import * as db from "./db"
 import { createSessionToken, verifySessionToken, SESSION_IDLE_DEFAULT_MS, type SessionClaims } from './session'
@@ -14,6 +15,22 @@ type Repeater = z.infer<typeof RepeaterSchema>;
 type ErrorJSON = z.infer<typeof ErrorSchema>;
 type ChangelogEntry = z.infer<typeof ChangelogEntrySchema>;
 type ChangelogResponse = z.infer<typeof ChangelogResponseSchema>;
+type RequestRecord = z.infer<typeof RequestRecordSchema>;
+type RequestListResponse = z.infer<typeof RequestListResponseSchema>;
+
+const repeaterSuggestionSchema = RepeaterSchema.partial();
+const repeaterModeKeys: Array<keyof Repeater['modes']> = [
+  'fm',
+  'am',
+  'usb',
+  'lsb',
+  'dmr',
+  'dstar',
+  'fusion',
+  'nxdn',
+  'parrot',
+  'beacon',
+];
 
 const LoginRequestBodySchema = z.object({
   deviceId: z.string().max(256).optional().openapi({ description: 'Client-provided device identifier for fingerprinting / audit.' })
@@ -167,12 +184,16 @@ const adminGuard = async (c: any, next: any) => {
 
 api.use('/admin/users', adminGuard)
 api.use('/admin/users/*', adminGuard)
+api.use('/admin/requests', adminGuard)
+api.use('/admin/requests/*', adminGuard)
+
+const authOptionalPaths = new Set(['/admin/login', '/requests'])
 
 // Require Bearer auth for all non-GET operations except the login endpoint
 api.use('/*', async (c, next) => {
   if (c.req.method === 'GET') return await next()
   const path = new URL(c.req.url).pathname.replace(/^\/v1/, '')
-  if (path === '/admin/login') return await next()
+  if (authOptionalPaths.has(path)) return await next()
   // @ts-ignore
   if (c.get('authUser')) return await next()
   const auth = await ensureBearerAuth(c)
@@ -200,8 +221,8 @@ api.openapi(
     const users = (r as any[]).map(u => ({ username: u.username, enabled: !!u.enabled, created: u.created, updated: u.updated }))
     return c.json(users, 200) as any
   }
-)
 
+)
 api.openapi(
   createRoute({
     method: 'post',
@@ -260,6 +281,196 @@ api.openapi(
     return c.json({ username: ret.username, enabled: !!ret.enabled }, 200) as any
   }
 )
+
+// --- Guest Request Endpoints --- //
+api.openapi(
+  createRoute({
+    method: 'post',
+    path: '/requests',
+    request: {
+      body: { content: { 'application/json': { schema: RequestSubmissionSchema } }, required: true },
+    },
+    responses: {
+      201: {
+        content: { 'application/json': { schema: RequestSubmissionResponseSchema } },
+        description: 'Submit a guest request',
+      },
+      '*': {
+        content: { 'application/json': { schema: ErrorSchema } },
+        description: 'Error description',
+      }
+    }
+  }),
+  async (c) => {
+    const submission = await c.req.valid('json')
+    const secret = (c.env as any).BGREPS_TURNSTILE_SECRET
+    if (!secret) {
+      return c.json({ failure: true, errors: { TURNSTILE: 'Turnstile secret is not configured.' }, code: 500 }, 500) as any
+    }
+    const clientIp = getClientIp(c)
+    const verification = await verifyTurnstileToken(secret, submission.turnstileToken, clientIp)
+    if (!verification.success) {
+      console.warn('Turnstile verification failed', {
+        ip: clientIp,
+        errorCodes: verification.errorCodes,
+      })
+      return c.json({ failure: true, errors: { TURNSTILE: 'Turnstile verification failed.' }, code: 403 }, 403) as any
+    }
+
+    const contact = submission.contact.trim()
+    const name = submission.name.trim()
+    const contactHash = await db.sha256Hex(contact.toLowerCase())
+    const windowMinutes = getRequestWindowMinutes(c.env)
+    const limit = getRequestLimit(c.env)
+
+    const pruneResult = await db.pruneRequestRateLimitHits(c.env.RepsDB, windowMinutes)
+    if (pruneResult && (pruneResult as ErrorJSON).failure) {
+      const status = ((pruneResult as ErrorJSON).code || 422) as ContentfulStatusCode
+      return c.json(pruneResult, status) as any
+    }
+
+    const countsResult = await db.countRequestRateLimitHits(c.env.RepsDB, { contactHash, ip: clientIp }, windowMinutes)
+    if ((countsResult as ErrorJSON).failure) {
+      const status = ((countsResult as ErrorJSON).code || 422) as ContentfulStatusCode
+      return c.json(countsResult, status) as any
+    }
+    const counts = countsResult as { byContact: number; byIp: number }
+
+    if (counts.byContact >= limit || (clientIp && counts.byIp >= limit)) {
+      return c.json({ failure: true, errors: { RATELIMIT: `Too many requests within ${windowMinutes} minutes.` }, code: 429 }, 429) as any
+    }
+
+    const payloadData: Record<string, unknown> = {}
+    if (submission.message !== undefined) payloadData.message = submission.message
+    if (submission.repeater) payloadData.repeater = submission.repeater
+    const payloadValue = Object.keys(payloadData).length ? payloadData : undefined
+
+    const insertResult = await db.insertGuestRequest(c.env.RepsDB, {
+      name,
+      contact,
+      contactHash,
+      payload: payloadValue,
+      status: 'pending',
+      ip: clientIp,
+      userAgent: c.req.header('User-Agent') || null,
+      cfRay: c.req.header('CF-Ray') || null,
+      cfCountry: c.req.header('CF-IPCountry') || null,
+    })
+    if ((insertResult as ErrorJSON).failure) {
+      const status = ((insertResult as ErrorJSON).code || 422) as ContentfulStatusCode
+      return c.json(insertResult, status) as any
+    }
+    const inserted = insertResult as RequestRecord
+
+    const logResult = await db.recordRequestRateLimitHit(c.env.RepsDB, { contactHash, ip: clientIp })
+    if (logResult && (logResult as ErrorJSON).failure) {
+      const status = ((logResult as ErrorJSON).code || 422) as ContentfulStatusCode
+      return c.json(logResult, status) as any
+    }
+
+    const usedByContact = counts.byContact + 1
+    const usedByIp = clientIp ? counts.byIp + 1 : 0
+    const used = clientIp ? Math.max(usedByContact, usedByIp) : usedByContact
+    const remaining = Math.max(0, limit - used)
+
+    return c.json({
+      id: inserted.id,
+      status: inserted.status,
+      rateLimit: { limit, remaining, windowMinutes },
+    }, 201) as any
+  }
+)
+
+api.openapi(
+  createRoute({
+    method: 'get',
+    path: '/admin/requests',
+    request: { query: RequestListQuerySchema },
+    responses: {
+      200: { content: { 'application/json': { schema: RequestListResponseSchema } }, description: 'List guest requests' },
+      '*': { content: { 'application/json': { schema: ErrorSchema } }, description: 'Error description' },
+    }
+  }),
+  async (c) => {
+    const query = c.req.valid('query')
+    const listResult = await db.listGuestRequests(c.env.RepsDB, query)
+    if ((listResult as ErrorJSON).failure) {
+      const status = ((listResult as ErrorJSON).code || 422) as ContentfulStatusCode
+      return c.json(listResult, status) as any
+    }
+    const list = listResult as RequestListResponse
+    return c.json({ requests: list.requests, nextCursor: list.nextCursor }, 200) as any
+  }
+)
+
+api.openapi(
+  createRoute({
+    method: 'get',
+    path: '/admin/requests/{id}',
+    request: { params: RequestIdParamSchema },
+    responses: {
+      200: { content: { 'application/json': { schema: RequestRecordSchema } }, description: 'Get a guest request' },
+      '*': { content: { 'application/json': { schema: ErrorSchema } }, description: 'Error description' },
+    }
+  }),
+  async (c) => {
+    const { id } = c.req.valid('param')
+    const result = await db.getGuestRequest(c.env.RepsDB, id)
+    if ((result as ErrorJSON).failure) {
+      const status = ((result as ErrorJSON).code || 422) as ContentfulStatusCode
+      return c.json(result, status) as any
+    }
+    return c.json(result, 200) as any
+  }
+)
+
+api.openapi(
+  createRoute({
+    method: 'patch',
+    path: '/admin/requests/{id}',
+    request: {
+      params: RequestIdParamSchema,
+      body: { content: { 'application/json': { schema: RequestUpdateSchema } }, required: true },
+    },
+    responses: {
+      200: { content: { 'application/json': { schema: RequestRecordSchema } }, description: 'Update a guest request' },
+      '*': { content: { 'application/json': { schema: ErrorSchema } }, description: 'Error description' },
+    }
+  }),
+  async (c) => {
+    const { id } = c.req.valid('param')
+    const body = await c.req.valid('json')
+    // @ts-ignore
+    const adminUser = c.get('authUser') as string | undefined
+    const existingResult = await db.getGuestRequest(c.env.RepsDB, id)
+    if ((existingResult as ErrorJSON).failure) {
+      const status = ((existingResult as ErrorJSON).code || 422) as ContentfulStatusCode
+      return c.json(existingResult, status) as any
+    }
+    const requestRecord = existingResult as RequestRecord
+    let nextStatus = body.status
+    if (body.status === 'approved') {
+      const applyResult = await applyRepeaterSuggestionFromRequest(c.env, requestRecord, adminUser)
+      if ((applyResult as ErrorJSON).failure) {
+        const status = ((applyResult as ErrorJSON).code || 422) as ContentfulStatusCode
+        return c.json(applyResult, status) as any
+      }
+      nextStatus = 'archived'
+    }
+    const updatePayload: { status?: RequestRecord['status']; adminNotes?: string; resolvedBy?: string | null } = {
+      adminNotes: body.adminNotes,
+      resolvedBy: adminUser ?? null,
+    }
+    if (nextStatus) updatePayload.status = nextStatus
+    const updateResult = await db.updateGuestRequest(c.env.RepsDB, id, updatePayload)
+    if ((updateResult as ErrorJSON).failure) {
+      const status = ((updateResult as ErrorJSON).code || 422) as ContentfulStatusCode
+      return c.json(updateResult, status) as any
+    }
+    return c.json(updateResult, 200) as any
+  }
+)
+
 
 
 
@@ -520,6 +731,133 @@ function formatZodErrors(error: z.ZodError) {
   }, {} as Record<string, string>);
 }
 
+type ApplyRepeaterResult = { action: 'created' | 'updated'; repeater: Repeater }
+
+async function applyRepeaterSuggestionFromRequest(
+  env: CloudflareBindings,
+  request: RequestRecord,
+  adminUser?: string,
+): Promise<ApplyRepeaterResult | ErrorJSON> {
+  if (request.status !== 'pending') {
+    return { failure: true, errors: { STATUS: 'Only pending requests can be approved.' }, code: 409 }
+  }
+  const rawSuggestion = request.payload?.repeater
+  if (!rawSuggestion || typeof rawSuggestion !== 'object') {
+    return { failure: true, errors: { REPEATER: 'This request does not include repeater details to apply.' }, code: 422 }
+  }
+  const parsed = repeaterSuggestionSchema.safeParse(rawSuggestion)
+  if (!parsed.success) {
+    return { failure: true, errors: formatZodErrors(parsed.error), code: 422 }
+  }
+  const suggestion = parsed.data
+  const callsign = typeof suggestion.callsign === 'string' ? suggestion.callsign.trim().toUpperCase() : undefined
+  if (!callsign) {
+    return { failure: true, errors: { CALLSIGN: 'Repeater suggestion must include a callsign.' }, code: 422 }
+  }
+  suggestion.callsign = callsign
+  const normalizedUser = adminUser?.trim().toUpperCase() || 'SYSTEM'
+  const existing = await db.getRepeater(env.RepsDB, callsign)
+  if ((existing as ErrorJSON).failure && (existing as ErrorJSON).code !== 404) {
+    return existing as ErrorJSON
+  }
+  if ((existing as ErrorJSON).failure) {
+    const prepared = prepareNewRepeaterFromSuggestion(suggestion)
+    const validated = RepeaterSchema.safeParse(prepared)
+    if (!validated.success) {
+      return { failure: true, errors: formatZodErrors(validated.error), code: 422 }
+    }
+    const created = await db.addRepeaterWithLog(env.RepsDB, normalizedUser, validated.data)
+    if ((created as ErrorJSON).failure) return created as ErrorJSON
+    return { action: 'created', repeater: created as Repeater }
+  }
+  const merged = mergeRepeaterRecords(existing as Repeater, suggestion)
+  const validated = RepeaterSchema.safeParse(merged)
+  if (!validated.success) {
+    return { failure: true, errors: formatZodErrors(validated.error), code: 422 }
+  }
+  const updated = await db.updateRepeaterWithLog(env.RepsDB, normalizedUser, callsign, validated.data)
+  if ((updated as ErrorJSON).failure) return updated as ErrorJSON
+  return { action: 'updated', repeater: updated as Repeater }
+}
+
+function prepareNewRepeaterFromSuggestion(suggestion: Partial<Repeater>): Repeater {
+  const prepared: Repeater = { ...suggestion } as Repeater
+  prepared.modes = mergeRepeaterModes(undefined, suggestion.modes)
+  prepared.freq = mergeRepeaterFreq(undefined, suggestion.freq)
+  const mergedInternet = mergeRepeaterInternet(undefined, suggestion.internet)
+  if (mergedInternet) prepared.internet = mergedInternet
+  else delete (prepared as any).internet
+  if ('info' in suggestion) {
+    prepared.info = Array.isArray(suggestion.info) ? [...suggestion.info] : undefined
+  }
+  return prepared
+}
+
+function mergeRepeaterRecords(base: Repeater, patch: Partial<Repeater>): Repeater {
+  const merged: Repeater = { ...base, ...patch } as Repeater
+  merged.modes = mergeRepeaterModes(base.modes, patch.modes)
+  merged.freq = mergeRepeaterFreq(base.freq, patch.freq)
+  const mergedInternet = mergeRepeaterInternet(base.internet, patch.internet)
+  if (mergedInternet) merged.internet = mergedInternet
+  else delete (merged as any).internet
+  if ('info' in patch) {
+    merged.info = Array.isArray(patch.info) ? [...patch.info] : undefined
+  }
+  return merged
+}
+
+function mergeRepeaterModes(
+  base?: Repeater['modes'],
+  patch?: Repeater['modes'],
+): Repeater['modes'] {
+  const seed = base ?? createEmptyModeState()
+  const result: Partial<Repeater['modes']> = {}
+  for (const key of repeaterModeKeys) {
+    const baseEntry = seed[key] ? { ...seed[key] } : {}
+    const patchEntry = patch?.[key]
+    result[key] = patchEntry ? { ...baseEntry, ...patchEntry } : baseEntry
+  }
+  return result as Repeater['modes']
+}
+
+function createEmptyModeState(): Repeater['modes'] {
+  const state: Partial<Repeater['modes']> = {}
+  for (const key of repeaterModeKeys) {
+    state[key] = { enabled: false } as any
+  }
+  return state as Repeater['modes']
+}
+
+function mergeRepeaterFreq(
+  base?: Repeater['freq'],
+  patch?: Partial<Repeater['freq']>,
+): Repeater['freq'] {
+  const result: Repeater['freq'] = base ? { ...base } : { rx: 0, tx: 0 }
+  if (patch) {
+    if ('rx' in patch && patch.rx !== undefined) result.rx = patch.rx
+    if ('tx' in patch && patch.tx !== undefined) result.tx = patch.tx
+    if ('tone' in patch) result.tone = patch.tone
+    if ('channel' in patch) result.channel = patch.channel
+  }
+  return result
+}
+
+function mergeRepeaterInternet(
+  base?: Repeater['internet'],
+  patch?: Repeater['internet'],
+): Repeater['internet'] | undefined {
+  if (!base && !patch) return undefined
+  const result: Record<string, unknown> = { ...(base ?? {}) }
+  if (patch) {
+    for (const key of Object.keys(patch)) {
+      const value = (patch as any)[key]
+      if (value === undefined) delete result[key]
+      else result[key] = value
+    }
+  }
+  return Object.keys(result).length ? (result as Repeater['internet']) : undefined
+}
+
 
 
 type NestedObject = { [key: string]: any };
@@ -624,6 +962,63 @@ const getRequestDeviceId = (c: Context<{ Bindings: CloudflareBindings }>): strin
   const headerDevice = c.req.header('X-Device-Id') || c.req.header('X-Device-ID') || ''
   const trimmed = headerDevice.trim()
   return trimmed.length ? trimmed : undefined
+}
+
+const getClientIp = (c: Context<{ Bindings: CloudflareBindings }>): string | undefined => {
+  const cfIp = c.req.header('CF-Connecting-IP') || ''
+  if (cfIp.trim().length) return cfIp.trim()
+  const forwarded = c.req.header('X-Forwarded-For') || ''
+  if (forwarded.trim().length) return forwarded.split(',')[0]?.trim() || undefined
+  return undefined
+}
+
+const DEFAULT_REQUEST_LIMIT = 5
+const MAX_REQUEST_LIMIT = 100
+const DEFAULT_REQUEST_WINDOW_MINUTES = 24 * 60
+const MAX_REQUEST_WINDOW_MINUTES = 7 * 24 * 60
+
+const getRequestLimit = (env: CloudflareBindings): number => {
+  const raw = Number((env as any).BGREPS_REQUEST_LIMIT)
+  if (Number.isFinite(raw) && raw > 0) {
+    return Math.max(1, Math.min(MAX_REQUEST_LIMIT, Math.floor(raw)))
+  }
+  return DEFAULT_REQUEST_LIMIT
+}
+
+export const getRequestWindowMinutes = (env: CloudflareBindings): number => {
+  const raw = Number((env as any).BGREPS_REQUEST_WINDOW_MINUTES)
+  if (Number.isFinite(raw) && raw > 0) {
+    return Math.max(5, Math.min(MAX_REQUEST_WINDOW_MINUTES, Math.floor(raw)))
+  }
+  return DEFAULT_REQUEST_WINDOW_MINUTES
+}
+
+type TurnstileVerificationResult = { success: boolean; errorCodes?: string[] }
+
+const TURNSTILE_VERIFY_ENDPOINT = 'https://challenges.cloudflare.com/turnstile/v0/siteverify'
+
+const verifyTurnstileToken = async (secret: string, token: string, remoteIp?: string): Promise<TurnstileVerificationResult> => {
+  const form = new URLSearchParams()
+  form.set('secret', secret)
+  form.set('response', token)
+  if (remoteIp) form.set('remoteip', remoteIp)
+  try {
+    const resp = await fetch(TURNSTILE_VERIFY_ENDPOINT, {
+      method: 'POST',
+      body: form,
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    })
+    const data: any = await resp.json()
+    const errorCodes = Array.isArray(data?.['error-codes']) ? data['error-codes'] : undefined
+    if (!resp.ok) {
+      console.error('Turnstile verification HTTP error', { status: resp.status, errorCodes })
+      return { success: false, errorCodes: errorCodes ?? ['http-error'] }
+    }
+    return { success: !!data?.success, errorCodes }
+  } catch (err) {
+    console.error('Turnstile verification error', err)
+    return { success: false, errorCodes: ['verification-error'] }
+  }
 }
 
 const computeIdleRefreshWindow = (env: CloudflareBindings): number => {

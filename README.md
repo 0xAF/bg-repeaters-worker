@@ -16,6 +16,60 @@ npm run dev
 npm run deploy
 ```
 
+## Configuration & Environment
+
+| Variable | Required | Description |
+| --- | --- | --- |
+| `SUPERADMIN_PW` | yes | Plain-text password used by the legacy SUPERADMIN Basic auth flow. Must be kept in a secret and never committed. |
+| `BGREPS_JWT_SECRET` | yes | HMAC secret for issuing/verifying admin JWTs. Rotate with `wrangler secret put BGREPS_JWT_SECRET`. |
+| `BGREPS_JWT_TTL_MS` | no | Absolute lifetime for issued JWTs (defaults to 24h). |
+| `BGREPS_JWT_IDLE_MS` | no | Sliding idle timeout before a session is considered stale (defaults to 2h). |
+| `BGREPS_REQUIRE_HTTPS` | no | When unset/`true`, login endpoints reject non-HTTPS origins except localhost. Override with `false` for local testing. |
+| `BGREPS_TURNSTILE_SECRET` | yes | Cloudflare Turnstile secret key used to verify guest submissions. Obtain it from the Turnstile dashboard and store it via `wrangler secret put BGREPS_TURNSTILE_SECRET`. |
+| `BGREPS_REQUEST_LIMIT` | no | Maximum guest submissions allowed per window for a single contact/IP (defaults to 5). |
+| `BGREPS_REQUEST_WINDOW_MINUTES` | no | Rolling window (in minutes) for the limiter and pruning logic (defaults to 1440 = 24h). |
+
+Required bindings declared in `wrangler.jsonc`:
+
+- `RepsDB` – D1 database with the schema from `schema.sql`.
+- `ASSETS` – Static asset binding used to serve `public/`.
+
+## Guest Request Workflow
+
+Anonymous operators can file requests via `POST /v1/requests`. The payload must include `name`, `contact`, an optional `message`, and a Turnstile token:
+
+```json
+{
+  "name": "Ivan LZ1ABC",
+  "contact": "ivan@example.com",
+  "message": "Please update the keeper info for LZ0BOT",
+  "repeater": { "callsign": "LZ0BOT" },
+  "turnstileToken": "<token from client-side widget>"
+}
+```
+
+Responses look like:
+
+```json
+{
+  "id": 42,
+  "status": "pending",
+  "rateLimit": {
+    "limit": 5,
+    "remaining": 4,
+    "windowMinutes": 1440
+  }
+}
+```
+
+### Rate limiting & cleanup
+
+- Every submission is recorded in the `request_rate_limits` table using a hash of the contact info and the caller IP.
+- Limits are controlled via `BGREPS_REQUEST_LIMIT` and `BGREPS_REQUEST_WINDOW_MINUTES`.
+- The Worker now exports a scheduled handler and Wrangler is configured with an hourly cron (`0 * * * *`). Each run prunes stale rows that fall outside the active window so the table stays small.
+
+Run the scheduled handler locally via `wrangler dev --test-scheduled` to confirm the prune logs fire when expected.
+
 ---
 
 ## Client Library: bgreps.js

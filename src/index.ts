@@ -10,7 +10,7 @@ import { swaggerUI } from '@hono/swagger-ui'
 // import { swaggerEditor } from '@hono/swagger-editor'
 import { html, raw } from 'hono/html'
 
-import { api } from './api'
+import { api, getRequestWindowMinutes } from './api'
 import * as db from './db'
 // import { admin } from './api-admin'
 
@@ -20,7 +20,7 @@ const app = new Hono<{ Bindings: CloudflareBindings }>()
 // CORS for all routes (covers API and static)
 app.use('*', cors({
   origin: '*',
-  allowMethods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowMethods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
   allowHeaders: ['Content-Type', 'Authorization', 'X-Device-Id', 'X-Device-ID'],
   exposeHeaders: ['X-Response-Time', 'X-New-JWT'],
   maxAge: 86400,
@@ -183,5 +183,17 @@ app.get('/api/*', (c) => c.text('API endpoint is not found', 404))
 
 // @ts-ignore
 // app.get('/type-error', () => 'return not Response instance')
+
+const pruneRequestRateLimits = async (env: CloudflareBindings): Promise<void> => {
+  const windowMinutes = getRequestWindowMinutes(env)
+  const result = await db.pruneRequestRateLimitHits(env.RepsDB, windowMinutes)
+  if (result && (result as any).failure) {
+    console.error('request_rate_limits prune failed', result)
+  }
+}
+
+export const scheduled = async (_event: ScheduledEvent, env: CloudflareBindings, ctx: ExecutionContext): Promise<void> => {
+  ctx.waitUntil(pruneRequestRateLimits(env))
+}
 
 export default app

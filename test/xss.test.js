@@ -41,3 +41,12 @@ test('sanitizer allows basic formatting tags', () => {
   const clean = sanitizeHtml(dirty)
   assert.equal(clean, dirty)
 })
+
+test('sanitizer strips style/srcset/data URIs and encodes unknown tags', () => {
+  const dirty = '<span style="color:red">Styled</span><a href="data:text/html;base64,ZW5jb2RlZA==">danger</a><custom-tag>bad</custom-tag>'
+  const clean = sanitizeHtml(dirty)
+  assert.ok(!/style=/i.test(clean), 'style attributes removed')
+  assert.ok(clean.includes('<span>Styled</span>'), 'span preserved without attributes')
+  assert.ok(clean.includes('<a href="#">danger</a>'), 'data: href neutered')
+  assert.ok(clean.includes('&lt;custom-tag&gt;bad&lt;/custom-tag&gt;'), 'unknown tags encoded')
+})

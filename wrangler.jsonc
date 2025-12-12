@@ -21,12 +21,11 @@
 		{
 			"pattern": "api.varna.radio",
 			"custom_domain": true
-		},
-		{
-			"pattern": "repeaters.varna.radio",
-			"custom_domain": true
 		}
 	],
+	"triggers": {
+		"crons": ["0 * * * *"]
+	},
 	/**
 	 * Smart Placement
 	 * Docs: https://developers.cloudflare.com/workers/configuration/smart-placement/#smart-placement

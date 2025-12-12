@@ -63,11 +63,35 @@ CREATE TABLE
 CREATE TABLE
     requests (
         id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
+        status TEXT NOT NULL DEFAULT 'pending',
         name TEXT NOT NULL,
         contact TEXT NOT NULL,
-        info TEXT NOT NULL,
-        date DATETIME NOT NULL ON CONFLICT REPLACE DEFAULT CURRENT_TIMESTAMP
+        contact_hash TEXT NOT NULL,
+        payload_json TEXT NOT NULL,
+        ip TEXT,
+        user_agent TEXT,
+        cf_ray TEXT,
+        cf_country TEXT,
+        created DATETIME NOT NULL ON CONFLICT REPLACE DEFAULT CURRENT_TIMESTAMP,
+        updated DATETIME NOT NULL ON CONFLICT REPLACE DEFAULT CURRENT_TIMESTAMP,
+        resolved_at DATETIME,
+        resolved_by TEXT,
+        admin_notes TEXT
     );
+
+CREATE INDEX IF NOT EXISTS idx_requests_status_created ON requests (status, created DESC);
+CREATE INDEX IF NOT EXISTS idx_requests_contact_hash ON requests (contact_hash);
+
+CREATE TABLE
+    IF NOT EXISTS request_rate_limits (
+        id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
+        contact_hash TEXT,
+        ip TEXT,
+        created DATETIME NOT NULL ON CONFLICT REPLACE DEFAULT CURRENT_TIMESTAMP
+    );
+
+CREATE INDEX IF NOT EXISTS idx_request_rate_limits_contact ON request_rate_limits (contact_hash, created DESC);
+CREATE INDEX IF NOT EXISTS idx_request_rate_limits_ip ON request_rate_limits (ip, created DESC);
 
 CREATE TABLE
     changelog (

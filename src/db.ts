@@ -2,6 +2,7 @@ import { RepeaterSchema, RepeaterQueryInternalSchema } from './api/RepeaterSchem
 import { sanitizeRepeater } from './sanitize'
 import { ErrorSchema } from './api/ErrorSchema'
 import { z } from '@hono/zod-openapi'
+import { RequestStatusEnum } from './api/RequestSchema'
 // import { util } from 'zod';
 import Maidenhead from '@amrato/maidenhead-ts';
 // Local type for changelog entries to avoid cross-file module resolution issues in some editors
@@ -10,6 +11,7 @@ type ChangelogEntry = { date: string; who: string; info: string }
 type Repeater = z.infer<typeof RepeaterSchema>;
 type RepeaterQueryInternal = z.infer<typeof RepeaterQueryInternalSchema>;
 type ErrorJSON = z.infer<typeof ErrorSchema>;
+type RequestStatus = z.infer<typeof RequestStatusEnum>;
 // --- User management helpers (hash + auth) ---
 // Passwords stored as SHA-256 hex strings; we accept Basic auth and compare.
 // We keep these lightweight to avoid external crypto dependencies; Web Crypto API is available in Workers.
@@ -211,6 +213,50 @@ type UserRecord = {
   last_login_ua?: string | null;
   created?: string;
   updated?: string;
+}
+
+type GuestRequestRecord = {
+  id: number;
+  status: RequestStatus;
+  name: string;
+  contact: string;
+  payload?: Record<string, unknown> | null;
+  ip?: string | null;
+  userAgent?: string | null;
+  cfRay?: string | null;
+  cfCountry?: string | null;
+  adminNotes?: string | null;
+  resolvedAt?: string | null;
+  resolvedBy?: string | null;
+  created: string;
+  updated: string;
+}
+
+type GuestRequestInsert = {
+  name: string;
+  contact: string;
+  contactHash: string;
+  payload?: Record<string, unknown> | null;
+  status?: RequestStatus;
+  ip?: string | null;
+  userAgent?: string | null;
+  cfRay?: string | null;
+  cfCountry?: string | null;
+}
+
+type RequestRateLimitFilters = {
+  contactHash?: string;
+  ip?: string | null;
+}
+
+type RequestRateLimitCounts = {
+  byContact: number;
+  byIp: number;
+}
+
+type GuestRequestListResult = {
+  requests: GuestRequestRecord[];
+  nextCursor: number | null;
 }
 
 const toHex = (buffer: ArrayBuffer): string => {
@@ -756,6 +802,195 @@ export const getChangelog = async (DB: D1Database): Promise<ChangelogEntry[] | E
       return [] as ChangelogEntry[];
     }
     return { failure: true, errors: { "SQL": e.message }, code: 422 }
+  }
+}
+
+const requestSelectFields = `
+  id, status, name, contact, payload_json, ip, user_agent, cf_ray, cf_country,
+  admin_notes, resolved_at, resolved_by, created, updated
+`
+
+const parseRequestPayload = (payload: string | null | undefined): Record<string, unknown> | null => {
+  if (!payload) return null
+  try {
+    const parsed = JSON.parse(payload)
+    return typeof parsed === 'object' && parsed !== null ? parsed as Record<string, unknown> : null
+  } catch (_) {
+    return null
+  }
+}
+
+const mapGuestRequestRow = (row: any): GuestRequestRecord => ({
+  id: Number(row.id),
+  status: (row.status || 'pending') as RequestStatus,
+  name: row.name,
+  contact: row.contact,
+  payload: parseRequestPayload(row.payload_json),
+  ip: row.ip ?? null,
+  userAgent: row.user_agent ?? null,
+  cfRay: row.cf_ray ?? null,
+  cfCountry: row.cf_country ?? null,
+  adminNotes: row.admin_notes ?? null,
+  resolvedAt: row.resolved_at ?? null,
+  resolvedBy: row.resolved_by ?? null,
+  created: row.created,
+  updated: row.updated,
+})
+
+const buildWindowArg = (minutes: number): string => `-${Math.max(1, Math.floor(minutes))} minutes`
+
+export const insertGuestRequest = async (DB: D1Database, data: GuestRequestInsert): Promise<GuestRequestRecord | ErrorJSON> => {
+  try {
+    const payloadJson = JSON.stringify(data.payload ?? {})
+    const q = `INSERT INTO requests (
+      status, name, contact, contact_hash, payload_json,
+      ip, user_agent, cf_ray, cf_country,
+      created, updated
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))`
+    const params = [
+      data.status ?? 'pending',
+      data.name,
+      data.contact,
+      data.contactHash,
+      payloadJson,
+      data.ip ?? null,
+      data.userAgent ?? null,
+      data.cfRay ?? null,
+      data.cfCountry ?? null,
+    ]
+    const result = await DB.prepare(q).bind(...params).run()
+    if (!result?.success) return { failure: true, errors: { SQL: 'Failed to insert request.' }, code: 422 }
+    const id = Number(result.meta?.last_row_id)
+    if (!Number.isFinite(id)) return { failure: true, errors: { SQL: 'Could not obtain request id.' }, code: 422 }
+    return await getGuestRequest(DB, id)
+  } catch (e: any) {
+    return { failure: true, errors: { SQL: e.message }, code: 422 }
+  }
+}
+
+export const getGuestRequest = async (DB: D1Database, id: number): Promise<GuestRequestRecord | ErrorJSON> => {
+  try {
+    const q = `SELECT ${requestSelectFields} FROM requests WHERE id = ?`
+    const { results } = await DB.prepare(q).bind(id).all() || { results: [] }
+    if (!results?.length) return { failure: true, errors: { NOTFOUND: 'Request not found.' }, code: 404 }
+    return mapGuestRequestRow(results[0])
+  } catch (e: any) {
+    return { failure: true, errors: { SQL: e.message }, code: 422 }
+  }
+}
+
+type GuestRequestListParams = {
+  status?: RequestStatus;
+  limit?: number;
+  cursor?: number;
+}
+
+export const listGuestRequests = async (DB: D1Database, params: GuestRequestListParams): Promise<GuestRequestListResult | ErrorJSON> => {
+  try {
+    const clauses: string[] = []
+    const values: any[] = []
+    if (params.status) {
+      clauses.push('status = ?')
+      values.push(params.status)
+    }
+    if (params.cursor) {
+      clauses.push('id < ?')
+      values.push(params.cursor)
+    }
+    let q = `SELECT ${requestSelectFields} FROM requests`
+    if (clauses.length) q += ' WHERE ' + clauses.join(' AND ')
+    q += ' ORDER BY id DESC LIMIT ?'
+    const limit = Math.max(1, Math.min(200, params.limit ?? 50))
+    values.push(limit)
+    const { results } = await DB.prepare(q).bind(...values).all() || { results: [] }
+    const mapped = (results || []).map(mapGuestRequestRow)
+    const nextCursor = mapped.length === limit ? mapped[mapped.length - 1].id : null
+    return { requests: mapped, nextCursor }
+  } catch (e: any) {
+    return { failure: true, errors: { SQL: e.message }, code: 422 }
+  }
+}
+
+type GuestRequestUpdateParams = {
+  status?: RequestStatus;
+  adminNotes?: string | null;
+  resolvedBy?: string | null;
+}
+
+export const updateGuestRequest = async (DB: D1Database, id: number, data: GuestRequestUpdateParams): Promise<GuestRequestRecord | ErrorJSON> => {
+  try {
+    const sets: string[] = []
+    const values: any[] = []
+    if (data.status) {
+      sets.push('status = ?')
+      values.push(data.status)
+      if (data.status === 'pending') {
+        sets.push('resolved_at = NULL')
+        sets.push('resolved_by = NULL')
+      } else {
+        sets.push('resolved_at = datetime(\'now\')')
+        sets.push('resolved_by = ?')
+        values.push(data.resolvedBy ?? null)
+      }
+    }
+    if (data.adminNotes !== undefined) {
+      sets.push('admin_notes = ?')
+      values.push(data.adminNotes ?? null)
+    }
+    if (!sets.length) {
+      const existing = await getGuestRequest(DB, id)
+      return existing
+    }
+    sets.push(`updated = datetime('now')`)
+    const q = `UPDATE requests SET ${sets.join(', ')} WHERE id = ?`
+    values.push(id)
+    const result = await DB.prepare(q).bind(...values).run()
+    if (result.meta?.rows_written === 0) {
+      return { failure: true, errors: { NOTFOUND: 'Request not found.' }, code: 404 }
+    }
+    return await getGuestRequest(DB, id)
+  } catch (e: any) {
+    return { failure: true, errors: { SQL: e.message }, code: 422 }
+  }
+}
+
+export const pruneRequestRateLimitHits = async (DB: D1Database, windowMinutes: number): Promise<void | ErrorJSON> => {
+  try {
+    const q = `DELETE FROM request_rate_limits WHERE created < datetime('now', ?)`
+    await DB.prepare(q).bind(buildWindowArg(windowMinutes)).run()
+  } catch (e: any) {
+    return { failure: true, errors: { SQL: e.message }, code: 422 }
+  }
+}
+
+export const recordRequestRateLimitHit = async (DB: D1Database, filters: RequestRateLimitFilters): Promise<void | ErrorJSON> => {
+  try {
+    if (!filters.contactHash && !filters.ip) return
+    const q = `INSERT INTO request_rate_limits (contact_hash, ip, created) VALUES (?, ?, datetime('now'))`
+    await DB.prepare(q).bind(filters.contactHash ?? null, filters.ip ?? null).run()
+  } catch (e: any) {
+    return { failure: true, errors: { SQL: e.message }, code: 422 }
+  }
+}
+
+export const countRequestRateLimitHits = async (DB: D1Database, filters: RequestRateLimitFilters, windowMinutes: number): Promise<RequestRateLimitCounts | ErrorJSON> => {
+  try {
+    const windowArg = buildWindowArg(windowMinutes)
+    let byContact = 0
+    let byIp = 0
+    if (filters.contactHash) {
+      const q = `SELECT COUNT(*) as count FROM request_rate_limits WHERE contact_hash = ? AND created >= datetime('now', ?)`
+      const { results } = await DB.prepare(q).bind(filters.contactHash, windowArg).all() || { results: [] }
+      byContact = Number(results?.[0]?.count || 0)
+    }
+    if (filters.ip) {
+      const q = `SELECT COUNT(*) as count FROM request_rate_limits WHERE ip = ? AND created >= datetime('now', ?)`
+      const { results } = await DB.prepare(q).bind(filters.ip, windowArg).all() || { results: [] }
+      byIp = Number(results?.[0]?.count || 0)
+    }
+    return { byContact, byIp }
+  } catch (e: any) {
+    return { failure: true, errors: { SQL: e.message }, code: 422 }
   }
 }
 
