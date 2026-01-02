@@ -455,7 +455,7 @@ api.openapi(
         const status = ((applyResult as ErrorJSON).code || 422) as ContentfulStatusCode
         return c.json(applyResult, status) as any
       }
-      nextStatus = 'archived'
+      nextStatus = 'approved'
     }
     const updatePayload: { status?: RequestRecord['status']; adminNotes?: string; resolvedBy?: string | null } = {
       adminNotes: body.adminNotes,
