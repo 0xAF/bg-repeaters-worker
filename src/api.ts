@@ -10,7 +10,7 @@ import * as db from "./db"
 import { createSessionToken, verifySessionToken, SESSION_IDLE_DEFAULT_MS, type SessionClaims } from './session'
 import { ContentfulStatusCode } from 'hono/utils/http-status'
 import type { Context } from 'hono'
-import { notifyNewGuestRequest, notifyGuestRequestResolved } from './telegram'
+import { notifyAdminsNewRequest, notifyAdminsApproved, notifyAdminsRejected } from './telegram'
 
 type Repeater = z.infer<typeof RepeaterSchema>;
 type ErrorJSON = z.infer<typeof ErrorSchema>;
@@ -219,7 +219,7 @@ api.openapi(
     const r = await db.listUsers(c.env.RepsDB)
     if ((r as any).failure) return c.json(r, (r as any).code || 422) as any
     // map enabled numeric to boolean
-    const users = (r as any[]).map(u => ({ username: u.username, enabled: !!u.enabled, created: u.created, updated: u.updated }))
+    const users = (r as any[]).map(u => ({ username: u.username, enabled: !!u.enabled, telegram_id: u.telegram_id, created: u.created, updated: u.updated }))
     return c.json(users, 200) as any
   }
 
@@ -236,10 +236,10 @@ api.openapi(
   }),
   async (c) => {
     const data = await c.req.valid('json')
-    const r = await db.createUser(c.env.RepsDB, data.username, data.password, data.enabled !== undefined ? data.enabled : true)
+    const r = await db.createUser(c.env.RepsDB, data.username, data.password, data.enabled !== undefined ? data.enabled : true, data.telegram_id)
     if ((r as any).failure) return c.json(r, (r as any).code || 422) as any
     const ret = r as any
-    return c.json({ username: ret.username, enabled: !!ret.enabled }, 201) as any
+    return c.json({ username: ret.username, enabled: !!ret.enabled, telegram_id: ret.telegram_id }, 201) as any
   }
 )
 
@@ -260,7 +260,7 @@ api.openapi(
     const r = await db.updateUser(c.env.RepsDB, username, body)
     if ((r as any).failure) return c.json(r, (r as any).code || 422) as any
     const ret = r as any
-    return c.json({ username: ret.username, enabled: !!ret.enabled }, 202) as any
+    return c.json({ username: ret.username, enabled: !!ret.enabled, telegram_id: ret.telegram_id }, 202) as any
   }
 )
 
@@ -279,7 +279,7 @@ api.openapi(
     const r = await db.deleteUser(c.env.RepsDB, username)
     if ((r as any).failure) return c.json(r, (r as any).code || 422) as any
     const ret = r as any
-    return c.json({ username: ret.username, enabled: !!ret.enabled }, 200) as any
+    return c.json({ username: ret.username, enabled: !!ret.enabled, telegram_id: ret.telegram_id }, 200) as any
   }
 )
 
@@ -364,16 +364,19 @@ api.openapi(
     const inserted = insertResult as RequestRecord
 
     // Notify admins of new request (non-blocking)
-    notifyNewGuestRequest(c.env, {
-      requestId: inserted.id,
-      submitterName: name,
-      message: submission.message,
-      hasRepeaterSuggestion: !!submission.repeater,
-      repeaterCallsign: typeof submission.repeater?.callsign === 'string' ? submission.repeater.callsign : undefined,
-      country: c.req.header('CF-IPCountry') || undefined,
-    }).catch(err => {
-      console.error('[Telegram] Notification error:', err);
-    });
+    const adminsForNotification = await db.getUsersWithTelegramId(c.env.RepsDB)
+    if (!(adminsForNotification as any).failure && Array.isArray(adminsForNotification)) {
+      notifyAdminsNewRequest(c.env, adminsForNotification, {
+        requestId: inserted.id,
+        submitterName: name,
+        message: submission.message,
+        hasRepeaterSuggestion: !!submission.repeater,
+        repeaterCallsign: typeof submission.repeater?.callsign === 'string' ? submission.repeater.callsign : undefined,
+        country: c.req.header('CF-IPCountry') || undefined,
+      }).catch(err => {
+        console.error('[Telegram] Notification error:', err);
+      });
+    }
 
     const logResult = await db.recordRequestRateLimitHit(c.env.RepsDB, { contactHash, ip: clientIp })
     if (logResult && (logResult as ErrorJSON).failure) {
@@ -464,7 +467,7 @@ api.openapi(
     let nextStatus = body.status
       let applyResult: ApplyRepeaterResult | ErrorJSON | undefined;
     if (body.status === 'approved') {
-      applyResult = await applyRepeaterSuggestionFromRequest(c.env, requestRecord, adminUser)
+      applyResult = await applyRepeaterSuggestionFromRequest(c.env, requestRecord, adminUser, requestRecord.name)
       if ((applyResult as ErrorJSON).failure) {
         const status = ((applyResult as ErrorJSON).code || 422) as ContentfulStatusCode
         return c.json(applyResult, status) as any
@@ -480,25 +483,36 @@ api.openapi(
     if ((updateResult as ErrorJSON).failure) {
       const status = ((updateResult as ErrorJSON).code || 422) as ContentfulStatusCode
       return c.json(updateResult, status) as any
+    }
 
-        // Notify of request resolution (non-blocking)
-        const updatedRequest = updateResult as RequestRecord;
-        const resolvedStatus = updatedRequest.status;
-        if (resolvedStatus && resolvedStatus !== 'pending') {
-          notifyGuestRequestResolved(c.env, {
-            requestId: updatedRequest.id,
-            submitterName: updatedRequest.name,
-            status: resolvedStatus as 'approved' | 'rejected' | 'archived',
-            action: applyResult && !(applyResult as ErrorJSON).failure ? (applyResult as ApplyRepeaterResult).action : undefined,
-            repeaterCallsign: applyResult && !(applyResult as ErrorJSON).failure ? (applyResult as ApplyRepeaterResult).repeater?.callsign : undefined,
-            resolvedBy: adminUser,
-            adminNotes: updatedRequest.adminNotes || undefined,
-          }).catch(err => {
+    // Notify of request resolution (non-blocking)
+    const updatedRequest = updateResult as RequestRecord;
+    const resolvedStatus = updatedRequest.status;
+    if (resolvedStatus && resolvedStatus !== 'pending') {
+      const adminsForNotification = await db.getUsersWithTelegramId(c.env.RepsDB)
+      if (!(adminsForNotification as any).failure && Array.isArray(adminsForNotification)) {
+        const notificationData = {
+          requestId: updatedRequest.id,
+          submitterName: updatedRequest.name,
+          status: resolvedStatus as 'approved' | 'rejected' | 'archived',
+          action: applyResult && !(applyResult as ErrorJSON).failure ? (applyResult as ApplyRepeaterResult).action : undefined,
+          repeaterCallsign: applyResult && !(applyResult as ErrorJSON).failure ? (applyResult as ApplyRepeaterResult).repeater?.callsign : undefined,
+          resolvedBy: adminUser,
+          adminNotes: updatedRequest.adminNotes || undefined,
+        };
+
+        if (resolvedStatus === 'approved') {
+          notifyAdminsApproved(c.env, adminsForNotification, notificationData).catch(err => {
+            console.error('[Telegram] Notification error:', err);
+          });
+        } else if (resolvedStatus === 'rejected') {
+          notifyAdminsRejected(c.env, adminsForNotification, notificationData).catch(err => {
             console.error('[Telegram] Notification error:', err);
           });
         }
-
+      }
     }
+
     return c.json(updateResult, 200) as any
   }
 )
@@ -769,6 +783,7 @@ async function applyRepeaterSuggestionFromRequest(
   env: CloudflareBindings,
   request: RequestRecord,
   adminUser?: string,
+  submitterName?: string,
 ): Promise<ApplyRepeaterResult | ErrorJSON> {
   if (request.status !== 'pending') {
     return { failure: true, errors: { STATUS: 'Only pending requests can be approved.' }, code: 409 }
@@ -798,7 +813,7 @@ async function applyRepeaterSuggestionFromRequest(
     if (!validated.success) {
       return { failure: true, errors: formatZodErrors(validated.error), code: 422 }
     }
-    const created = await db.addRepeaterWithLog(env.RepsDB, normalizedUser, validated.data)
+    const created = await db.addRepeaterWithLog(env.RepsDB, normalizedUser, validated.data, submitterName)
     if ((created as ErrorJSON).failure) return created as ErrorJSON
     return { action: 'created', repeater: created as Repeater }
   }
@@ -807,7 +822,7 @@ async function applyRepeaterSuggestionFromRequest(
   if (!validated.success) {
     return { failure: true, errors: formatZodErrors(validated.error), code: 422 }
   }
-  const updated = await db.updateRepeaterWithLog(env.RepsDB, normalizedUser, callsign, validated.data)
+  const updated = await db.updateRepeaterWithLog(env.RepsDB, normalizedUser, callsign, validated.data, submitterName)
   if ((updated as ErrorJSON).failure) return updated as ErrorJSON
   return { action: 'updated', repeater: updated as Repeater }
 }

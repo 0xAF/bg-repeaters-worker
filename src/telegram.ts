@@ -1,16 +1,19 @@
 /**
  * Telegram Bot API integration for guest request notifications.
  * 
- * Sends notifications to multiple configured chat IDs (users, groups, channels)
+ * Sends notifications to admin users who have configured their personal Telegram chat ID
  * when guest requests are submitted or resolved (approved/rejected).
  * 
  * Environment variables:
- * - BGREPS_TELEGRAM_BOT_TOKEN: Bot token from @BotFather
- * - BGREPS_TELEGRAM_CHAT_IDS: Comma-separated list of chat IDs (e.g., "123456,789012,-1001234567890")
- * - BGREPS_TELEGRAM_NOTIFY_REJECTIONS: "true" to notify on rejections (default: true)
+ * - BGREPS_TELEGRAM_BOT_TOKEN: Bot token from @BotFather (required for notifications)
  */
 
 const TELEGRAM_API_BASE = 'https://api.telegram.org/bot';
+
+type AdminNotificationRecipient = {
+  username: string;
+  telegram_id: string;
+};
 
 type NewRequestNotificationData = {
   requestId: number;
@@ -32,49 +35,18 @@ type ResolvedRequestNotificationData = {
 };
 
 /**
- * Parse comma-separated chat IDs from environment variable.
- * Validates numeric format (supports positive user IDs, negative group/channel IDs).
- */
-function parseChatIds(env: CloudflareBindings): string[] {
-  const raw = env.BGREPS_TELEGRAM_CHAT_IDS ?? '';
-  if (!raw.trim()) return [];
-  
-  return raw
-    .split(',')
-    .map(id => id.trim())
-    .filter(id => id.length > 0 && /^-?\d+$/.test(id)); // Validate numeric format
-}
-
-/**
- * Check if bot token and chat IDs are configured.
- */
-function isConfigured(env: CloudflareBindings): boolean {
-  const token = env.BGREPS_TELEGRAM_BOT_TOKEN?.trim();
-  const chatIds = parseChatIds(env);
-  return !!token && chatIds.length > 0;
-}
-
-/**
- * Check if rejection notifications are enabled (default: true).
- */
-function shouldNotifyRejections(env: CloudflareBindings): boolean {
-  const value = env.BGREPS_TELEGRAM_NOTIFY_REJECTIONS?.toLowerCase().trim();
-  return value !== 'false' && value !== '0';
-}
-
-/**
  * Escape special characters for Telegram MarkdownV2 format.
- * Required chars: _ * [ ] ( ) ~ ` > # + - = | { } . !
+ * Required chars to escape: _ * [ ] ( ) ~ ` > # + - = | { } . ! \
  */
 function escapeTelegramMarkdown(text: string): string {
   return text.replace(/[_*\[\]()~`>#+\-=|{}.!\\]/g, '\\$&');
 }
 
 /**
- * Send Telegram message to a single chat.
+ * Send Telegram message to a single user.
  * @throws Error if Telegram API returns non-200 status
  */
-async function sendTelegramMessageToChat(
+async function sendTelegramMessageToUser(
   token: string,
   chatId: string,
   text: string
@@ -101,36 +73,36 @@ async function sendTelegramMessageToChat(
 }
 
 /**
- * Send notification to all configured chat IDs in parallel.
+ * Send notification to all admin recipients in parallel.
  * Non-blocking: failures are logged but don't throw.
  */
-async function sendTelegramMessage(
-  env: CloudflareBindings,
+async function notifyAdmins(
+  token: string | undefined,
+  admins: AdminNotificationRecipient[],
   text: string
 ): Promise<void> {
-  const token = env.BGREPS_TELEGRAM_BOT_TOKEN?.trim();
-  if (!token) {
+  if (!token?.trim()) {
     console.warn('[Telegram] Bot token not configured, skipping notification');
     return;
   }
   
-  const chatIds = parseChatIds(env);
-  if (chatIds.length === 0) {
-    console.warn('[Telegram] No chat IDs configured, skipping notification');
+  if (admins.length === 0) {
+    console.log('[Telegram] No admins with Telegram IDs configured, skipping notification');
     return;
   }
   
-  // Send to all chats in parallel for speed
+  // Send to all admins in parallel for speed
   const results = await Promise.allSettled(
-    chatIds.map(chatId => sendTelegramMessageToChat(token, chatId, text))
+    admins.map(admin => sendTelegramMessageToUser(token, admin.telegram_id, text))
   );
   
-  // Log any failures (non-blocking)
+  // Log results (non-blocking)
   results.forEach((result, idx) => {
+    const admin = admins[idx];
     if (result.status === 'rejected') {
-      console.error(`[Telegram] Failed to send to chat ${chatIds[idx]}:`, result.reason);
+      console.error(`[Telegram] Failed to send to admin ${admin.username}:`, result.reason);
     } else {
-      console.log(`[Telegram] Successfully sent notification to chat ${chatIds[idx]}`);
+      console.log(`[Telegram] Successfully sent notification to admin ${admin.username}`);
     }
   });
 }
@@ -179,7 +151,7 @@ function formatNewRequestNotification(data: NewRequestNotificationData): string 
     lines.push('');
   }
   
-  // Footer (admin panel link would go here if BASE_URL available)
+  // Footer
   lines.push('_Awaiting review in admin panel_');
   
   return lines.join('\n');
@@ -235,18 +207,20 @@ function formatResolvedRequestNotification(data: ResolvedRequestNotificationData
 /**
  * Send notification when a new guest request is submitted.
  * Non-blocking: failures are silently logged.
+ * 
+ * @param env Cloudflare environment bindings
+ * @param admins Array of admin users with Telegram IDs configured
+ * @param data Request submission details
  */
-export async function notifyNewGuestRequest(
+export async function notifyAdminsNewRequest(
   env: CloudflareBindings,
+  admins: AdminNotificationRecipient[],
   data: NewRequestNotificationData
 ): Promise<void> {
-  if (!isConfigured(env)) {
-    return; // Silently skip if not configured
-  }
-  
   try {
+    const token = env.BGREPS_TELEGRAM_BOT_TOKEN?.trim();
     const message = formatNewRequestNotification(data);
-    await sendTelegramMessage(env, message);
+    await notifyAdmins(token, admins, message);
   } catch (error) {
     console.error('[Telegram] Failed to send new request notification:', error);
   }
@@ -255,31 +229,53 @@ export async function notifyNewGuestRequest(
 /**
  * Send notification when a guest request is resolved (approved/rejected/archived).
  * Non-blocking: failures are silently logged.
+ * 
+ * @param env Cloudflare environment bindings
+ * @param admins Array of admin users with Telegram IDs configured
+ * @param data Request resolution details
  */
-export async function notifyGuestRequestResolved(
+export async function notifyAdminsApproved(
   env: CloudflareBindings,
+  admins: AdminNotificationRecipient[],
   data: ResolvedRequestNotificationData
 ): Promise<void> {
-  if (!isConfigured(env)) {
-    return; // Silently skip if not configured
-  }
-  
-  // Skip rejection notifications if disabled
-  if (data.status === 'rejected' && !shouldNotifyRejections(env)) {
-    console.log('[Telegram] Rejection notifications disabled, skipping');
-    return;
-  }
-  
-  // Skip archived notifications (low priority status change)
-  if (data.status === 'archived') {
-    console.log('[Telegram] Archived status, skipping notification');
+  if (data.status !== 'approved') {
+    console.warn('[Telegram] notifyAdminsApproved called with non-approved status');
     return;
   }
   
   try {
+    const token = env.BGREPS_TELEGRAM_BOT_TOKEN?.trim();
     const message = formatResolvedRequestNotification(data);
-    await sendTelegramMessage(env, message);
+    await notifyAdmins(token, admins, message);
   } catch (error) {
-    console.error('[Telegram] Failed to send resolved request notification:', error);
+    console.error('[Telegram] Failed to send approval notification:', error);
+  }
+}
+
+/**
+ * Send notification when a guest request is rejected.
+ * Non-blocking: failures are silently logged.
+ * 
+ * @param env Cloudflare environment bindings
+ * @param admins Array of admin users with Telegram IDs configured
+ * @param data Request rejection details
+ */
+export async function notifyAdminsRejected(
+  env: CloudflareBindings,
+  admins: AdminNotificationRecipient[],
+  data: ResolvedRequestNotificationData
+): Promise<void> {
+  if (data.status !== 'rejected') {
+    console.warn('[Telegram] notifyAdminsRejected called with non-rejected status');
+    return;
+  }
+  
+  try {
+    const token = env.BGREPS_TELEGRAM_BOT_TOKEN?.trim();
+    const message = formatResolvedRequestNotification(data);
+    await notifyAdmins(token, admins, message);
+  } catch (error) {
+    console.error('[Telegram] Failed to send rejection notification:', error);
   }
 }

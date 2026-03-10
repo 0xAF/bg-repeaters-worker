@@ -11,7 +11,6 @@ declare namespace Cloudflare {
 		BGREPS_REQUIRE_HTTPS: string;
 		BGREPS_TURNSTILE_SECRET: string;
 		BGREPS_TELEGRAM_BOT_TOKEN: string;
-		BGREPS_TELEGRAM_CHAT_IDS: string;
 		RepsDB: D1Database;
 		ASSETS: Fetcher;
 	}

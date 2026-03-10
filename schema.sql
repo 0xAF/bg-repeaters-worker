@@ -109,8 +109,11 @@ CREATE TABLE
                 last_login DATETIME,
                 last_login_device TEXT,
                 last_login_ua TEXT,
+        telegram_id TEXT,
         created DATETIME NOT NULL ON CONFLICT REPLACE DEFAULT CURRENT_TIMESTAMP,
         updated DATETIME NOT NULL ON CONFLICT REPLACE DEFAULT CURRENT_TIMESTAMP
     );
+
+CREATE INDEX IF NOT EXISTS idx_users_telegram_id ON users (telegram_id);
 
 -- SUPERADMIN credentials are managed via the SUPERADMIN_PW environment variable and are not stored in this table.

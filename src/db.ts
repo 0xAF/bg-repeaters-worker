@@ -52,7 +52,7 @@ export const sha256Hex = async (input: string): Promise<string> => {
 
 export const listUsers = async (DB: D1Database): Promise<UserRecord[] | ErrorJSON> => {
   try {
-    const q = `SELECT username, enabled, created, updated FROM users ORDER BY username ASC`
+    const q = `SELECT username, enabled, telegram_id, created, updated FROM users ORDER BY username ASC`
     const { results } = await DB.prepare(q).all() || { results: [] }
     return results as UserRecord[]
   } catch (e: any) {
@@ -60,7 +60,7 @@ export const listUsers = async (DB: D1Database): Promise<UserRecord[] | ErrorJSO
   }
 }
 
-export const createUser = async (DB: D1Database, username: string, password: string, enabled: boolean): Promise<UserRecord | ErrorJSON> => {
+export const createUser = async (DB: D1Database, username: string, password: string, enabled: boolean, telegram_id?: string): Promise<UserRecord | ErrorJSON> => {
   try {
     if (isSuperadminUsername(username)) {
       return { failure: true, errors: { SUPERADMIN: 'The SUPERADMIN account is managed via environment variables.' }, code: 400 }
@@ -68,16 +68,16 @@ export const createUser = async (DB: D1Database, username: string, password: str
     const existing = await getUser(DB, username)
     if ((existing as any).username) return { failure: true, errors: { EXISTS: 'User already exists.' }, code: 406 }
     const hash = await sha256Hex(password)
-    const q = `INSERT INTO users (username, password, enabled, token_version, last_login, last_login_device, last_login_ua, created, updated)
-      VALUES (UPPER(?), ?, ?, 1, NULL, NULL, NULL, datetime('now'), datetime('now'))`
-    await DB.prepare(q).bind(username.toUpperCase(), hash, enabled ? 1 : 0).run()
+    const q = `INSERT INTO users (username, password, enabled, token_version, last_login, last_login_device, last_login_ua, telegram_id, created, updated)
+      VALUES (UPPER(?), ?, ?, 1, NULL, NULL, NULL, ?, datetime('now'), datetime('now'))`
+    await DB.prepare(q).bind(username.toUpperCase(), hash, enabled ? 1 : 0, telegram_id ?? null).run()
     return await getUser(DB, username) as UserRecord
   } catch (e: any) {
     return { failure: true, errors: { SQL: e.message }, code: 422 }
   }
 }
 
-export const updateUser = async (DB: D1Database, username: string, data: { password?: string; enabled?: boolean }): Promise<UserRecord | ErrorJSON> => {
+export const updateUser = async (DB: D1Database, username: string, data: { password?: string; enabled?: boolean; telegram_id?: string }): Promise<UserRecord | ErrorJSON> => {
   try {
     if (isSuperadminUsername(username)) {
       return { failure: true, errors: { SUPERADMIN: 'The SUPERADMIN account cannot be modified via the API.' }, code: 400 }
@@ -88,6 +88,7 @@ export const updateUser = async (DB: D1Database, username: string, data: { passw
     const values: any[] = []
     if (data.password) { parts.push('password = ?'); values.push(await sha256Hex(data.password)) }
     if (data.enabled !== undefined) { parts.push('enabled = ?'); values.push(data.enabled ? 1 : 0) }
+    if (data.telegram_id !== undefined) { parts.push('telegram_id = ?'); values.push(data.telegram_id ?? null) }
     if (!parts.length) return user as UserRecord // nothing to update
     parts.push(`updated = datetime('now')`)
     const q = `UPDATE users SET ${parts.join(', ')} WHERE username = UPPER(?)`
@@ -119,7 +120,7 @@ export const getUser = async (DB: D1Database, username: string): Promise<UserRec
     if (isSuperadminUsername(username)) {
       return getSuperadminRecord()
     }
-    const q = `SELECT username, password, enabled, token_version, last_login, last_login_device, last_login_ua, created, updated
+    const q = `SELECT username, password, enabled, token_version, last_login, last_login_device, last_login_ua, telegram_id, created, updated
       FROM users WHERE username = UPPER(?)`
     const { results } = await DB.prepare(q).bind(username).all() || { results: [] }
     if (!results?.length) return {} as UserRecord
@@ -202,6 +203,31 @@ export const bumpTokenVersion = async (DB: D1Database, username: string): Promis
   }
 }
 
+export const getUsersWithTelegramId = async (DB: D1Database): Promise<{ username: string; telegram_id: string }[] | ErrorJSON> => {
+  try {
+    const q = `SELECT username, telegram_id FROM users WHERE telegram_id IS NOT NULL AND enabled = 1 ORDER BY username ASC`
+    const { results } = await DB.prepare(q).all() || { results: [] }
+    return results as { username: string; telegram_id: string }[]
+  } catch (e: any) {
+    return { failure: true, errors: { SQL: e.message }, code: 422 }
+  }
+}
+
+export const updateUserTelegramId = async (DB: D1Database, username: string, telegram_id: string | null): Promise<UserRecord | ErrorJSON> => {
+  try {
+    if (isSuperadminUsername(username)) {
+      return { failure: true, errors: { SUPERADMIN: 'The SUPERADMIN account cannot be modified via the API.' }, code: 400 }
+    }
+    const user = await getUser(DB, username)
+    if (!(user as any).username) return { failure: true, errors: { NOTFOUND: 'User not found.' }, code: 404 }
+    const q = `UPDATE users SET telegram_id = ?, updated = datetime('now') WHERE username = UPPER(?)`
+    await DB.prepare(q).bind(telegram_id ?? null, username).run()
+    return await getUser(DB, username) as UserRecord
+  } catch (e: any) {
+    return { failure: true, errors: { SQL: e.message }, code: 422 }
+  }
+}
+
 // --- User management helpers ---
 type UserRecord = {
   username: string;
@@ -211,6 +237,7 @@ type UserRecord = {
   last_login?: string | null;
   last_login_device?: string | null;
   last_login_ua?: string | null;
+  telegram_id?: string | null;
   created?: string;
   updated?: string;
 }
@@ -620,10 +647,12 @@ export const addChangelog = async (DB: D1Database, who: string, info: string): P
 }
 
 // Convenience wrappers that accept a username to log changelog entries
-export const addRepeaterWithLog = async (DB: D1Database, who: string, p: Repeater): Promise<Repeater | ErrorJSON> => {
+export const addRepeaterWithLog = async (DB: D1Database, who: string, p: Repeater, submitterName?: string): Promise<Repeater | ErrorJSON> => {
   const res = await addRepeater(DB, p)
   if ((res as any).failure) return res as ErrorJSON
-  await addChangelog(DB, who, `${who.toUpperCase()}: added new repeater: ${p.callsign}`)
+  const requester = submitterName?.trim()
+  const suffix = requester ? ` (request from ${requester})` : ''
+  await addChangelog(DB, who, `${who.toUpperCase()}: added new repeater: ${p.callsign}${suffix}`)
   return res
 }
 
@@ -693,7 +722,7 @@ const describeDigitalModeChanges = (before?: Repeater['modes'], after?: Repeater
   return messages
 }
 
-export const updateRepeaterWithLog = async (DB: D1Database, who: string, callsign: string, p: Repeater): Promise<Repeater | ErrorJSON> => {
+export const updateRepeaterWithLog = async (DB: D1Database, who: string, callsign: string, p: Repeater, submitterName?: string): Promise<Repeater | ErrorJSON> => {
   const before = await getRepeater(DB, callsign)
   if ((before as any).failure) return before as ErrorJSON
   const res = await updateRepeater(DB, callsign, p)
@@ -771,7 +800,9 @@ export const updateRepeaterWithLog = async (DB: D1Database, who: string, callsig
     if (coverageMsg) msgs.push(coverageMsg)
   }
   const details = msgs.length ? `: ${msgs.join('. ')}.` : ''
-  await addChangelog(DB, who, `${callsign}` + details)
+  const requester = submitterName?.trim()
+  const suffix = requester ? ` (request from ${requester})` : ''
+  await addChangelog(DB, who, `${who.toUpperCase()}: ${callsign}${suffix}` + details)
   return res
 }
 
