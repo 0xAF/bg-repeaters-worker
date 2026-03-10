@@ -52,6 +52,7 @@ async function sendTelegramMessageToUser(
   text: string
 ): Promise<unknown> {
   const endpoint = `${TELEGRAM_API_BASE}${token}/sendMessage`;
+  console.log('[Telegram] Calling endpoint:', endpoint, 'for chat:', chatId);
   
   const response = await fetch(endpoint, {
     method: 'POST',
@@ -64,12 +65,17 @@ async function sendTelegramMessageToUser(
     }),
   });
   
+  console.log('[Telegram] Response status:', response.status, 'ok:', response.ok);
+  
   if (!response.ok) {
     const errorText = await response.text();
+    console.error('[Telegram] Telegram API error response:', response.status, errorText);
     throw new Error(`Telegram API error (${response.status}): ${errorText}`);
   }
   
-  return await response.json();
+  const result = await response.json();
+  console.log('[Telegram] Telegram API success:', result);
+  return result;
 }
 
 /**
@@ -92,9 +98,15 @@ async function notifyAdmins(
   }
   
   // Send to all admins in parallel for speed
+  console.log('[Telegram] Formatting message for', admins.length, 'admins. Message length:', text.length);
   const results = await Promise.allSettled(
-    admins.map(admin => sendTelegramMessageToUser(token, admin.telegram_id, text))
+    admins.map(admin => {
+      console.log('[Telegram] Sending to admin:', admin.username, 'chat_id:', admin.telegram_id);
+      return sendTelegramMessageToUser(token, admin.telegram_id, text);
+    })
   );
+  
+  console.log('[Telegram] Promise.allSettled results:', results.length, 'results');
   
   // Log results (non-blocking)
   results.forEach((result, idx) => {
