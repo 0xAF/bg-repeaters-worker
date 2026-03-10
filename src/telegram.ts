@@ -58,29 +58,30 @@ async function sendTelegramMessageToUser(
     parse_mode: 'MarkdownV2',
     disable_web_page_preview: true,
   };
-  console.log('[Telegram] Message text length:', text.length, 'text:', JSON.stringify(text));
+  console.log('[Telegram] Message text length:', text.length);
   console.log('[Telegram] Calling endpoint for chat:', chatId);
   
   try {
+    console.log('[Telegram] Starting fetch...');
     const response = await fetch(endpoint, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload),
     });
     
-    console.log('[Telegram] Response status:', response.status, 'ok:', response.ok);
+    console.log('[Telegram] Fetch completed, status:', response.status);
     
     if (!response.ok) {
       const errorText = await response.text();
-      console.error('[Telegram] Telegram API error response:', response.status, errorText);
+      console.error('[Telegram] API error:', response.status, 'body:', errorText);
       throw new Error(`Telegram API error (${response.status}): ${errorText}`);
     }
     
     const result = await response.json();
-    console.log('[Telegram] Telegram API success:', result);
+    console.log('[Telegram] API success, message sent');
     return result;
   } catch (error) {
-    console.error('[Telegram] sendTelegramMessageToUser caught error:', error);
+    console.error('[Telegram] Exception in sendTelegramMessageToUser:', String(error));
     throw error;
   }
 }
