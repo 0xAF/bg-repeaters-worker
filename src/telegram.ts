@@ -209,7 +209,7 @@ function formatResolvedRequestNotification(data: ResolvedRequestNotificationData
   
   // Resolver
   if (resolvedBy) {
-    lines.push(`👨‍💼 ${escapeTelegramMarkdown(statusText)} by: ${escapeTelegramMarkdown(resolvedBy)}`);
+    lines.push(`� ${escapeTelegramMarkdown(statusText)} by: ${escapeTelegramMarkdown(resolvedBy)}`);
   }
   
   // Admin notes (truncated to 200 chars for privacy)
