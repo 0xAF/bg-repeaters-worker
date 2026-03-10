@@ -337,7 +337,9 @@ api.openapi(
     }
     const counts = countsResult as { byContact: number; byIp: number }
 
-    if (counts.byContact >= limit || (clientIp && counts.byIp >= limit)) {
+    // Skip rate limiting on localhost/dev environment
+    const isLocalhost = clientIp === '127.0.0.1' || clientIp === 'localhost'
+    if (!isLocalhost && (counts.byContact >= limit || (clientIp && counts.byIp >= limit))) {
       return c.json({ failure: true, errors: { RATELIMIT: `Too many requests within ${windowMinutes} minutes.` }, code: 429 }, 429) as any
     }
 
@@ -490,6 +492,7 @@ api.openapi(
     const resolvedStatus = updatedRequest.status;
     if (resolvedStatus && resolvedStatus !== 'pending') {
       const adminsForNotification = await db.getUsersWithTelegramId(c.env.RepsDB)
+      console.log('[Telegram] Admins for notification:', Array.isArray(adminsForNotification) ? adminsForNotification.length : 'error', adminsForNotification);
       if (!(adminsForNotification as any).failure && Array.isArray(adminsForNotification)) {
         const notificationData = {
           requestId: updatedRequest.id,
@@ -500,16 +503,19 @@ api.openapi(
           resolvedBy: adminUser,
           adminNotes: updatedRequest.adminNotes || undefined,
         };
+        console.log('[Telegram] Sending', resolvedStatus, 'notification to', adminsForNotification.length, 'admins');
 
         if (resolvedStatus === 'approved') {
           notifyAdminsApproved(c.env, adminsForNotification, notificationData).catch(err => {
-            console.error('[Telegram] Notification error:', err);
+            console.error('[Telegram] Notification error (approved):', err);
           });
         } else if (resolvedStatus === 'rejected') {
           notifyAdminsRejected(c.env, adminsForNotification, notificationData).catch(err => {
-            console.error('[Telegram] Notification error:', err);
+            console.error('[Telegram] Notification error (rejected):', err);
           });
         }
+      } else {
+        console.log('[Telegram] Failed to get admins or no admins with telegram_id');
       }
     }
 
