@@ -52,30 +52,37 @@ async function sendTelegramMessageToUser(
   text: string
 ): Promise<unknown> {
   const endpoint = `${TELEGRAM_API_BASE}${token}/sendMessage`;
-  console.log('[Telegram] Calling endpoint:', endpoint, 'for chat:', chatId);
+  const payload = {
+    chat_id: chatId,
+    text,
+    parse_mode: 'MarkdownV2',
+    disable_web_page_preview: true,
+  };
+  console.log('[Telegram] Message text length:', text.length, 'text:', JSON.stringify(text));
+  console.log('[Telegram] Calling endpoint for chat:', chatId);
   
-  const response = await fetch(endpoint, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      chat_id: chatId,
-      text,
-      parse_mode: 'MarkdownV2',
-      disable_web_page_preview: true,
-    }),
-  });
-  
-  console.log('[Telegram] Response status:', response.status, 'ok:', response.ok);
-  
-  if (!response.ok) {
-    const errorText = await response.text();
-    console.error('[Telegram] Telegram API error response:', response.status, errorText);
-    throw new Error(`Telegram API error (${response.status}): ${errorText}`);
+  try {
+    const response = await fetch(endpoint, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    
+    console.log('[Telegram] Response status:', response.status, 'ok:', response.ok);
+    
+    if (!response.ok) {
+      const errorText = await response.text();
+      console.error('[Telegram] Telegram API error response:', response.status, errorText);
+      throw new Error(`Telegram API error (${response.status}): ${errorText}`);
+    }
+    
+    const result = await response.json();
+    console.log('[Telegram] Telegram API success:', result);
+    return result;
+  } catch (error) {
+    console.error('[Telegram] sendTelegramMessageToUser caught error:', error);
+    throw error;
   }
-  
-  const result = await response.json();
-  console.log('[Telegram] Telegram API success:', result);
-  return result;
 }
 
 /**
