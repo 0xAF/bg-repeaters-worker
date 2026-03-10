@@ -358,6 +358,10 @@ The worker can send Telegram notifications to configured admins when guest reque
 - `formatNewRequestNotification()` — Template for new submissions (emoji, name, message preview, link)
 - `formatResolvedRequestNotification()` — Template for approved/rejected (status emoji, repeater callsign, admin notes)
 - `escapeTelegramMarkdown()` — Escape special chars for MarkdownV2 format
+- **MarkdownV2 formatting rules**:
+  - Use `parse_mode: 'MarkdownV2'` for formatted messages
+  - Escape these special chars: `_ * [ ] ( ) ~ ` > # + - = | { } . ! \`
+  - **CRITICAL**: Avoid composite emojis (zero-width joiner sequences like 👨‍💼). These corrupt MarkdownV2 parsing and cause text loss. Use simple single-codepoint emojis instead: 🔧, 👤, 🔔, ❌, ✅, 🔔, 📡, 📝, 🌍
 
 ### Error Handling
 
@@ -403,6 +407,7 @@ curl -X PATCH http://localhost:8787/v1/admin/requests/1 \
 - Failed deliveries logged with chat ID and error reason
 - Successful deliveries logged with chat ID
 - If notifications not received: verify bot token, chat IDs, bot added to groups/channels
+- **MarkdownV2 parsing failures**: If rejection/approval messages fail silently, likely cause is composite emoji in message text. Use `wrangler tail` to see exact message content and response from Telegram API. Replace any composite emojis with single-codepoint alternatives.
 
 ## Client Bundle & Public API
 
@@ -435,3 +440,4 @@ curl -X PATCH http://localhost:8787/v1/admin/requests/1 \
 - **Mailhead locator (`qth`)**: Computed from lat/long via the `locator` library; never store it directly from client input. Recalculate on every write.
 - **Derived channel numbers**: `freq.channel` is auto-calculated via `getChannel()` based on `freq.rx`, `freq.tx`, and mode. Don't trust client values; recompute on the server.
 - **Guest request merging**: When approving a suggestion for an existing repeater, merge mode-by-mode and field-by-field (not wholesale replacement) to preserve data. Use `mergeRepeaterRecords()` helper.
+- **Telegram MarkdownV2 composite emojis**: Avoid composite emojis (emojis made with zero-width joiners, like 👨‍💼) in Telegram notification messages formatted as MarkdownV2. These emojis corrupt the message text in the parser, causing text loss and malformed messages. Use simple single-codepoint emojis instead (e.g., 🔧, 👤, 🔔, ❌, ✅). Always test rejection notification messages on production after changes to ensure Telegram API accepts them.
