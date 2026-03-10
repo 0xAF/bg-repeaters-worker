@@ -368,7 +368,7 @@ api.openapi(
     // Notify admins of new request (non-blocking)
     const adminsForNotification = await db.getUsersWithTelegramId(c.env.RepsDB)
     if (!(adminsForNotification as any).failure && Array.isArray(adminsForNotification)) {
-      notifyAdminsNewRequest(c.env, adminsForNotification, {
+      await notifyAdminsNewRequest(c.env, adminsForNotification, {
         requestId: inserted.id,
         submitterName: name,
         message: submission.message,
@@ -506,11 +506,11 @@ api.openapi(
         console.log('[Telegram] Sending', resolvedStatus, 'notification to', adminsForNotification.length, 'admins');
 
         if (resolvedStatus === 'approved') {
-          notifyAdminsApproved(c.env, adminsForNotification, notificationData).catch(err => {
+          await notifyAdminsApproved(c.env, adminsForNotification, notificationData).catch(err => {
             console.error('[Telegram] Notification error (approved):', err);
           });
         } else if (resolvedStatus === 'rejected') {
-          notifyAdminsRejected(c.env, adminsForNotification, notificationData).catch(err => {
+          await notifyAdminsRejected(c.env, adminsForNotification, notificationData).catch(err => {
             console.error('[Telegram] Notification error (rejected):', err);
           });
         }
