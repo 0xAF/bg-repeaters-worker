@@ -36,6 +36,15 @@
 	 * Bindings allow your Worker to interact with resources on the Cloudflare Developer Platform, including
 	 * databases, object storage, AI inference, real-time communication and more.
 	 * https://developers.cloudflare.com/workers/runtime-apis/bindings/
+		 * 
+		 * Environment Variables (configure via `wrangler secret put`):
+		 * - SUPERADMIN_PW: Superadmin login password
+		 * - BGREPS_JWT_SECRET: JWT HMAC secret
+		 * - BGREPS_REQUIRE_HTTPS: Enforce HTTPS on login (boolean, optional)
+		 * - BGREPS_TURNSTILE_SECRET: Cloudflare Turnstile verification secret
+		 * - BGREPS_TELEGRAM_BOT_TOKEN: Telegram bot token from @BotFather (optional)
+		 * - BGREPS_TELEGRAM_CHAT_IDS: Comma-separated list of chat IDs (optional, e.g., "123456,789012,-1001234567890")
+		 * - BGREPS_TELEGRAM_NOTIFY_REJECTIONS: Enable rejection notifications (optional, default: true)
 	 */
 	/**
 	 * Environment Variables
