@@ -7,7 +7,24 @@ const { readFileSync } = require('node:fs')
 const path = require('node:path')
 
 function encode(s) { return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;') }
-const TAGS = new Set(['p','br','b','i','em','strong','u','small','sub','sup','code','pre','blockquote','ul','ol','li','a','span'])
+function encodeAttr(s) { return encode(s).replace(/"/g, '&quot;').replace(/'/g, '&#39;') }
+function unquoteAttr(raw) {
+  const v = String(raw || '').trim()
+  if ((v.startsWith('"') && v.endsWith('"')) || (v.startsWith("'") && v.endsWith("'"))) return v.slice(1, -1)
+  return v
+}
+function isSafeUrl(value) {
+  const v = String(value || '').trim()
+  if (!v) return false
+  if (/^(?:javascript|data|vbscript|file):/i.test(v)) return false
+  try {
+    const u = new URL(v)
+    return u.protocol === 'http:' || u.protocol === 'https:'
+  } catch {
+    return /^(?:\/|\.{1,2}\/)?[^\s]+$/.test(v)
+  }
+}
+const TAGS = new Set(['p','br','b','i','em','strong','u','small','sub','sup','code','pre','blockquote','ul','ol','li','a','span','img'])
 function sanitizeHtml(input) {
   if (input == null) return undefined
   let html = String(input)
@@ -21,7 +38,49 @@ function sanitizeHtml(input) {
     let safeRest = String(rest)
       .replace(/\sstyle\s*=\s*("[^"]*"|'[^']*'|[^\s>]+)/gi, '')
       .replace(/\ssrcset\s*=\s*("[^"]*"|'[^']*'|[^\s>]+)/gi, '')
+      .replace(/\ssandbox\s*=\s*("[^"]*"|'[^']*'|[^\s>]+)/gi, '')
     safeRest = safeRest.replace(/(href|src)\s*=\s*("|')(javascript:[^"']*|data:[^"']*)("|')/gi, '$1="#"')
+
+    if (tag === 'img') {
+      const kept = []
+      const attrRe = /\s([a-zA-Z_:][a-zA-Z0-9_:\-]*)\s*=\s*("[^"]*"|'[^']*'|[^\s>]+)/g
+      let m
+      while ((m = attrRe.exec(safeRest)) !== null) {
+        const key = String(m[1]).toLowerCase()
+        const raw = unquoteAttr(m[2])
+        if (key === 'src') {
+          if (isSafeUrl(raw)) kept.push(` src="${encodeAttr(raw)}"`)
+          continue
+        }
+        if (key === 'alt' || key === 'title') {
+          kept.push(` ${key}="${encodeAttr(raw)}"`)
+          continue
+        }
+        if (key === 'loading') {
+          const loading = raw.toLowerCase()
+          if (loading === 'lazy' || loading === 'eager' || loading === 'auto') {
+            kept.push(` loading="${loading}"`)
+          }
+          continue
+        }
+        if (key === 'referrerpolicy') {
+          const rp = raw.toLowerCase()
+          if (
+            rp === 'no-referrer' ||
+            rp === 'origin' ||
+            rp === 'same-origin' ||
+            rp === 'strict-origin' ||
+            rp === 'strict-origin-when-cross-origin' ||
+            rp === 'no-referrer-when-downgrade' ||
+            rp === 'unsafe-url'
+          ) {
+            kept.push(` referrerpolicy="${rp}"`)
+          }
+        }
+      }
+      safeRest = kept.join('')
+    }
+
     return `<${full.startsWith('</') ? '/' : ''}${tag}${safeRest}>`
   })
   return html.trim()
@@ -49,4 +108,20 @@ test('sanitizer strips style/srcset/data URIs and encodes unknown tags', () => {
   assert.ok(clean.includes('<span>Styled</span>'), 'span preserved without attributes')
   assert.ok(clean.includes('<a href="#">danger</a>'), 'data: href neutered')
   assert.ok(clean.includes('&lt;custom-tag&gt;bad&lt;/custom-tag&gt;'), 'unknown tags encoded')
+})
+
+test('sanitizer preserves safe img src including relative paths', () => {
+  const dirty = '<p><img alt="BG" loading="lazy" referrerpolicy="no-referrer" src="img/bulgaria-icon.png"></p>'
+  const clean = sanitizeHtml(dirty)
+  assert.ok(clean.includes('<img'), 'img tag preserved')
+  assert.ok(clean.includes('src="img/bulgaria-icon.png"'), 'relative src preserved')
+  assert.ok(clean.includes('alt="BG"'), 'alt preserved')
+})
+
+test('sanitizer drops unsafe img src protocol', () => {
+  const dirty = '<p><img src="javascript:alert(1)" alt="x"></p>'
+  const clean = sanitizeHtml(dirty)
+  assert.ok(clean.includes('<img'), 'img tag preserved')
+  assert.ok(!clean.includes('javascript:'), 'unsafe scheme removed')
+  assert.ok(!clean.includes('src="javascript:alert(1)"'), 'unsafe src not preserved')
 })

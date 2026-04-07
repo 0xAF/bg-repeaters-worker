@@ -7,7 +7,7 @@
 // 4. Preserve basic formatting tags and links.
 
 const TAG_WHITELIST = new Set([
-  'p','br','b','i','em','strong','u','small','sub','sup','code','pre','blockquote','ul','ol','li','a','span'
+  'p','br','b','i','em','strong','u','small','sub','sup','code','pre','blockquote','ul','ol','li','a','span','img'
 ])
 
 // Encode a string minimally (only angle brackets & ampersand) to neuter HTML.
@@ -15,6 +15,31 @@ const encode = (s: string): string => s
   .replace(/&/g, '&amp;')
   .replace(/</g, '&lt;')
   .replace(/>/g, '&gt;')
+
+const encodeAttr = (s: string): string => encode(s)
+  .replace(/"/g, '&quot;')
+  .replace(/'/g, '&#39;')
+
+const unquoteAttr = (raw: string): string => {
+  const v = String(raw || '').trim()
+  if ((v.startsWith('"') && v.endsWith('"')) || (v.startsWith("'") && v.endsWith("'"))) {
+    return v.slice(1, -1)
+  }
+  return v
+}
+
+const isSafeUrl = (value: string): boolean => {
+  const v = String(value || '').trim()
+  if (!v) return false
+  if (/^(?:javascript|data|vbscript|file):/i.test(v)) return false
+  try {
+    const u = new URL(v)
+    return u.protocol === 'http:' || u.protocol === 'https:'
+  } catch {
+    // Allow relative references: img/a.jpg, ./img/a.jpg, ../img/a.jpg, /img/a.jpg
+    return /^(?:\/|\.{1,2}\/)?[^\s]+$/.test(v)
+  }
+}
 
 export const sanitizeHtml = (input?: string | null): string | undefined => {
   if (input == null) return undefined
@@ -42,8 +67,52 @@ export const sanitizeHtml = (input?: string | null): string | undefined => {
       .replace(/\sstyle\s*=\s*("[^"]*"|'[^']*'|[^\s>]+)/gi, '')
       // remove srcset attribute
       .replace(/\ssrcset\s*=\s*("[^"]*"|'[^']*'|[^\s>]+)/gi, '')
+      // remove potentially dangerous iframe-related attributes
+      .replace(/\ssandbox\s*=\s*("[^"]*"|'[^']*'|[^\s>]+)/gi, '')
     // Clean href/src again for JS or data URIs (nested case)
     safeRest = safeRest.replace(/(href|src)\s*=\s*("|')(javascript:[^"']*|data:[^"']*)("|')/gi, '$1="#"')
+
+    // For img tags, allow only a minimal safe attribute subset.
+    if (tag === 'img') {
+      const kept: string[] = []
+      const attrRe = /\s([a-zA-Z_:][a-zA-Z0-9_:\-]*)\s*=\s*("[^"]*"|'[^']*'|[^\s>]+)/g
+      let m: RegExpExecArray | null
+      while ((m = attrRe.exec(safeRest)) !== null) {
+        const key = m[1].toLowerCase()
+        const raw = unquoteAttr(m[2])
+        if (key === 'src') {
+          if (isSafeUrl(raw)) kept.push(` src="${encodeAttr(raw)}"`)
+          continue
+        }
+        if (key === 'alt' || key === 'title') {
+          kept.push(` ${key}="${encodeAttr(raw)}"`)
+          continue
+        }
+        if (key === 'loading') {
+          const loading = raw.toLowerCase()
+          if (loading === 'lazy' || loading === 'eager' || loading === 'auto') {
+            kept.push(` loading="${loading}"`)
+          }
+          continue
+        }
+        if (key === 'referrerpolicy') {
+          const rp = raw.toLowerCase()
+          if (
+            rp === 'no-referrer' ||
+            rp === 'origin' ||
+            rp === 'same-origin' ||
+            rp === 'strict-origin' ||
+            rp === 'strict-origin-when-cross-origin' ||
+            rp === 'no-referrer-when-downgrade' ||
+            rp === 'unsafe-url'
+          ) {
+            kept.push(` referrerpolicy="${rp}"`)
+          }
+        }
+      }
+      safeRest = kept.join('')
+    }
+
     return `<${full.startsWith('</') ? '/' : ''}${tag}${safeRest}>`
   })
 
